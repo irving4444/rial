@@ -20,10 +20,29 @@ if (!fs.existsSync(uploadsDir)) {
     fs.mkdirSync(uploadsDir);
 }
 
+// Log all incoming requests for debugging
+app.use((req, res, next) => {
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.url} from ${req.ip}`);
+    next();
+});
+
+// Simple test endpoint
+app.get('/test', (req, res) => {
+    console.log('✅ Test endpoint hit!');
+    res.json({ message: 'Backend is working!', timestamp: new Date().toISOString() });
+});
+
 app.post('/prove', upload.single('img_buffer'), (req, res) => {
     console.log('Received request to /prove');
+    console.log('req.file:', req.file);
+    console.log('req.body:', Object.keys(req.body));
+    console.log('req.headers:', req.headers['content-type']);
 
     // --- 1. Extract Data ---
+    if (!req.file) {
+        console.log('❌ No file uploaded');
+        return res.status(400).json({ error: 'No file uploaded', body: req.body });
+    }
     const imageBuffer = req.file.buffer;
     const {
         signature,
@@ -89,6 +108,7 @@ app.post('/prove', upload.single('img_buffer'), (req, res) => {
     });
 });
 
-app.listen(port, () => {
-    console.log(`Backend server listening at http://localhost:${port}`);
+app.listen(port, '0.0.0.0', () => {
+    console.log(`Backend server listening at http://0.0.0.0:${port}`);
+    console.log(`Access from iPhone at http://10.0.0.132:${port}`);
 });
