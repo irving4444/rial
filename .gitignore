@@ -1,0 +1,46 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Xcode
+build/
+DerivedData/
+*.xcodeproj/*
+!*.xcodeproj/project.pbxproj
+*.xcworkspace/*
+!*.xcworkspace/contents.xcworkspacedata
+xcuserdata/
+*.xcuserdatad
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Swift Package Manager
+.build/
+Packages/
+*.swiftpm
+
+# CocoaPods
+Pods/
+Podfile.lock
+
+# Node
+backend/node_modules/
+backend/npm-debug.log
+backend/package-lock.json
+
+# Backend uploads
+backend/uploads/
+
+# Docker
+backend/backend/zk-image-poc/target/
+
+# Editor
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
