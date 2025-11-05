@@ -13,6 +13,9 @@
   "dependencies": {
     "express": "^4.19.2",
     "multer": "^1.4.5-lts.1",
-    "elliptic": "^6.5.5"
+    "elliptic": "^6.5.5",
+    "ethers": "^6.9.0",
+    "dotenv": "^16.3.1",
+    "node-cron": "^3.0.3"
   }
 }

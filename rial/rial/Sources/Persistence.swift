@@ -85,4 +85,51 @@ struct PersistenceController {
     func isAttested() -> Bool {
         return defaults.bool(forKey: "attested")
     }
+    
+    // MARK: - Certified Image Management
+    
+    func saveCertifiedImage(attestedImage: AttestedImage, imageUrl: String?, isVerified: Bool) {
+        // Create a dictionary to store the image data
+        var imageDict = [String: String]()  // Changed to [String: String] for UserDefaults compatibility
+        
+        if let imageData = attestedImage.imageData {
+            // Convert Data to base64 string for UserDefaults storage
+            imageDict["imageData"] = imageData.base64EncodedString()
+            print("📦 Saving image data: \(imageData.count) bytes")
+        }
+        
+        imageDict["merkleRoot"] = attestedImage.merkleRoot ?? "unknown"
+        imageDict["signature"] = attestedImage.signature ?? "unknown"
+        imageDict["publicKey"] = attestedImage.publicKey ?? "unknown"
+        imageDict["timestamp"] = attestedImage.timestamp ?? ISO8601DateFormatter().string(from: Date())
+        
+        // Convert Date to ISO8601 string
+        let dateFormatter = ISO8601DateFormatter()
+        imageDict["certificationDate"] = dateFormatter.string(from: Date())
+        
+        imageDict["imageUrl"] = imageUrl ?? ""
+        imageDict["isVerified"] = isVerified ? "true" : "false"
+        
+        print("💾 Image dict keys: \(imageDict.keys)")
+        
+        // Get existing certified images or create new array
+        var certifiedImages = getCertifiedImages()
+        certifiedImages.append(imageDict)
+        
+        print("📚 Total certified images: \(certifiedImages.count)")
+        
+        // Save to UserDefaults
+        defaults.set(certifiedImages, forKey: "certifiedImages")
+        defaults.synchronize() // Force save
+        
+        print("✅ Saved to UserDefaults")
+    }
+    
+    func getCertifiedImages() -> [[String: Any]] {
+        return defaults.array(forKey: "certifiedImages") as? [[String: Any]] ?? []
+    }
+    
+    func clearCertifiedImages() {
+        defaults.removeObject(forKey: "certifiedImages")
+    }
 }

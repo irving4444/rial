@@ -4,12 +4,48 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const EC = require('elliptic').ec;
+const cron = require('node-cron');
+require('dotenv').config();
+
+const blockchainService = require('./blockchain-service');
 
 const app = express();
-const port = 3000;
+const port = process.env.PORT || 3000;
 
 // Elliptic curve setup - P-256 is used by iOS Secure Enclave
 const ec = new EC('p256');
+
+// Initialize blockchain service
+(async () => {
+    const rpcUrl = process.env.POLYGON_RPC_URL || 'https://polygon-rpc.com';
+    const privateKey = process.env.PRIVATE_KEY;
+    const contractAddress = process.env.CONTRACT_ADDRESS;
+    
+    if (privateKey && contractAddress) {
+        await blockchainService.initialize(rpcUrl, privateKey, contractAddress);
+    } else {
+        console.log('⚠️ Blockchain not configured. Set POLYGON_RPC_URL, PRIVATE_KEY, and CONTRACT_ADDRESS in .env');
+        console.log('   Attestations will be queued but not submitted to blockchain.\n');
+    }
+})();
+
+// Schedule batch submission
+const batchInterval = process.env.BATCH_INTERVAL_HOURS || 1;
+const batchSize = parseInt(process.env.BATCH_SIZE || '100');
+
+cron.schedule(`0 */${batchInterval} * * *`, async () => {
+    console.log('\n⏰ Scheduled batch submission triggered...');
+    const status = blockchainService.getBatchStatus();
+    
+    if (status.pending >= batchSize) {
+        const result = await blockchainService.submitBatch();
+        if (result.success) {
+            console.log(`✅ Auto-submitted batch of ${result.count} attestations`);
+        }
+    } else {
+        console.log(`ℹ️ Only ${status.pending} pending (threshold: ${batchSize}). Skipping.`);
+    }
+});
 
 // Configure multer for file uploads
 const storage = multer.memoryStorage();
@@ -21,6 +57,10 @@ if (!fs.existsSync(uploadsDir)) {
     fs.mkdirSync(uploadsDir);
 }
 
+// Serve static files (web portal)
+app.use(express.static(path.join(__dirname, 'public')));
+app.use('/uploads', express.static(uploadsDir));
+
 // Middleware for logging
 app.use((req, res, next) => {
     console.log(`[${new Date().toISOString()}] ${req.method} ${req.url} from ${req.ip}`);
@@ -31,6 +71,83 @@ app.use((req, res, next) => {
 app.get('/test', (req, res) => {
     console.log('✅ Test endpoint hit!');
     res.json({ message: 'Backend is working!', timestamp: new Date().toISOString() });
+});
+
+// Blockchain status endpoint
+app.get('/blockchain/status', (req, res) => {
+    const status = blockchainService.getBatchStatus();
+    res.json({
+        initialized: blockchainService.isInitialized,
+        ...status,
+        batchSize: batchSize,
+        batchInterval: `${batchInterval} hours`
+    });
+});
+
+// Manual batch submission (admin)
+app.post('/blockchain/submit-batch', async (req, res) => {
+    console.log('📤 Manual batch submission requested...');
+    
+    const result = await blockchainService.submitBatch();
+    
+    if (result.success) {
+        res.json({
+            success: true,
+            message: `Submitted batch of ${result.count} attestations`,
+            ...result
+        });
+    } else {
+        res.status(500).json({
+            success: false,
+            error: result.error
+        });
+    }
+});
+
+// Verify attestation on blockchain
+app.get('/blockchain/verify/:attestationId', async (req, res) => {
+    const { attestationId } = req.params;
+    
+    console.log(`🔍 Verifying attestation: ${attestationId}`);
+    
+    const result = await blockchainService.verifyOnChain(attestationId);
+    
+    if (result.error) {
+        res.status(500).json({ error: result.error });
+    } else {
+        res.json(result);
+    }
+});
+
+// Reveal image publicly (optional)
+app.post('/blockchain/reveal', express.json(), async (req, res) => {
+    const { attestationId, imageUrl, metadataUrl } = req.body;
+    
+    console.log(`🌐 Reveal request for: ${attestationId}`);
+    
+    if (!attestationId || !imageUrl) {
+        return res.status(400).json({ error: 'attestationId and imageUrl required' });
+    }
+    
+    const result = await blockchainService.revealImage(
+        attestationId,
+        imageUrl,
+        metadataUrl || ''
+    );
+    
+    if (result.success) {
+        res.json({
+            success: true,
+            message: 'Image revealed publicly on blockchain',
+            txHash: result.txHash,
+            blockNumber: result.blockNumber
+        });
+    } else {
+        res.status(500).json({
+            success: false,
+            error: result.error
+        });
+    }
 });
 
 // Main prove endpoint
@@ -55,13 +172,15 @@ app.post('/prove', upload.single('img_buffer'), async (req, res) => {
             signature: signatureBase64,
             public_key: publicKeyBase64,
             c2pa_claim: c2paClaimJson,
-            transformations: transformationsJson
+            transformations: transformationsJson,
+            proof_metadata: proofMetadataJson
         } = req.body;
         
         console.log('📋 Form data:');
         console.log(`   - Signature: ${signatureBase64 ? signatureBase64.substring(0, 40) + '...' : 'missing'}`);
         console.log(`   - Public Key: ${publicKeyBase64 ? publicKeyBase64.substring(0, 40) + '...' : 'missing'}`);
         console.log(`   - Transformations: ${transformationsJson || 'none'}`);
+        console.log(`   - Proof Metadata: ${proofMetadataJson ? 'present' : 'missing'}`);
         
         // 3. Save image to disk
         const filename = `image-${Date.now()}.png`;
@@ -115,7 +234,64 @@ app.post('/prove', upload.single('img_buffer'), async (req, res) => {
             }
         }
         
-        // 7. Generate response
+        // 7. Parse proof metadata
+        let proofMetadata = null;
+        if (proofMetadataJson) {
+            try {
+                proofMetadata = JSON.parse(proofMetadataJson);
+                console.log('📍 Proof Metadata:');
+                if (proofMetadata.cameraModel) console.log(`   - Camera: ${proofMetadata.cameraModel}`);
+                if (proofMetadata.latitude) console.log(`   - Location: ${proofMetadata.latitude}, ${proofMetadata.longitude}`);
+                if (proofMetadata.accelerometerX !== undefined) console.log(`   - Motion: Detected`);
+            } catch (e) {
+                console.log(`⚠️ Failed to parse proof metadata: ${e.message}`);
+            }
+        }
+        
+        // 8. Queue for blockchain attestation (if signature is valid)
+        let attestationId = null;
+        if (signatureValid && c2paClaim) {
+            try {
+                // Compute image hash
+                const imageHash = '0x' + crypto.createHash('sha256').update(imageBuffer).digest('hex');
+                
+                // Compute metadata hash
+                let metadataHash = '0x' + '0'.repeat(64); // Zero hash if no metadata
+                if (proofMetadata) {
+                    const metadataStr = JSON.stringify(proofMetadata);
+                    metadataHash = '0x' + crypto.createHash('sha256').update(metadataStr).digest('hex');
+                }
+                
+                // Convert public key to Ethereum address (owner)
+                const ownerAddress = blockchainService.publicKeyToAddress(publicKeyBase64);
+                
+                // Convert device public key to address
+                const deviceAddress = blockchainService.publicKeyToAddress(publicKeyBase64);
+                
+                // Generate attestation ID
+                const timestamp = Math.floor(Date.now() / 1000);
+                attestationId = blockchainService.generateAttestationId(imageHash, timestamp);
+                
+                // Queue for blockchain submission
+                blockchainService.addToBatch({
+                    merkleRoot: '0x' + c2paClaim.imageRoot,
+                    imageHash: imageHash,
+                    metadataHash: metadataHash,
+                    devicePublicKey: deviceAddress,
+                    owner: ownerAddress,
+                    timestamp: timestamp
+                });
+                
+                console.log(`🔗 Queued for blockchain:`);
+                console.log(`   - Attestation ID: ${attestationId}`);
+                console.log(`   - Owner: ${ownerAddress}`);
+                
+            } catch (error) {
+                console.log(`⚠️ Failed to queue for blockchain: ${error.message}`);
+            }
+        }
+        
+        // 9. Generate response
         const response = {
             success: true,
             message: 'Image received and verified',
@@ -123,6 +299,12 @@ app.post('/prove', upload.single('img_buffer'), async (req, res) => {
             imageUrl: `/uploads/${filename}`,
             c2paClaim: c2paClaim,
             transformations: transformations,
+            proofMetadata: proofMetadata,
+            blockchain: attestationId ? {
+                attestationId: attestationId,
+                status: 'queued',
+                batchStatus: blockchainService.getBatchStatus()
+            } : null,
             timestamp: new Date().toISOString()
         };
         
@@ -245,7 +427,17 @@ async function verifySignature(imageBuffer, signatureBase64, publicKeyBase64, c2
             
             // Verify signature against merkle root
             try {
-                const isValid = publicKey.verify(merkleRootHex, { r, s });
+                // IMPORTANT: iOS signs the raw bytes, not the hex string!
+                // We need to convert the hex string back to bytes
+                const merkleRootBytes = Buffer.from(merkleRootHex, 'hex');
+                
+                // Create SHA-256 hash of the merkle root bytes (if needed)
+                // Note: iOS signs the merkle root directly, which is already a SHA-256 hash
+                const messageHash = crypto.createHash('sha256').update(merkleRootBytes).digest();
+                
+                console.log(`   🔍 Message hash: ${messageHash.toString('hex').substring(0, 40)}...`);
+                
+                const isValid = publicKey.verify(messageHash, { r, s });
                 console.log(`   ${isValid ? '✅' : '❌'} Signature verification: ${isValid ? 'VALID' : 'INVALID'}`);
                 resolve(isValid);
             } catch (verifyError) {

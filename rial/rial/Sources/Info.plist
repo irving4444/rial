@@ -63,5 +63,9 @@
 	</dict>
 	<key>NSCameraUsageDescription</key>
 	<string>This app needs to access the camera to capture images for attestation.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Location data is used to prove the image was captured in a real physical location, not AI-generated.</string>
+	<key>NSMotionUsageDescription</key>
+	<string>Motion data is used to prove the device was moving in real-world physics, not AI-generated.</string>
 </dict>
 </plist>

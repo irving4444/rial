@@ -5,6 +5,7 @@ import CryptoKit
 struct AttestedImage {
     var image: UIImage
     var c2paClaim: C2PAClaim?
+    var proofMetadata: ProofMetadata?  // Anti-AI proof data
 
     var imageData: Data? {
         // Use high quality compression (0.9) to preserve image clarity
@@ -26,5 +27,9 @@ struct AttestedImage {
     
     var timestamp: String? {
         return c2paClaim?.timestamp
+    }
+    
+    var metadataHash: Data? {
+        return proofMetadata?.computeHash()
     }
 }

@@ -32,11 +32,23 @@ backend/node_modules/
 backend/npm-debug.log
 backend/package-lock.json
 
+# Environment variables (IMPORTANT: Contains private keys!)
+backend/.env
+.env
+*.env
+!config.template.env
+
 # Backend uploads
 backend/uploads/
 
 # Docker
 backend/backend/zk-image-poc/target/
+
+# Solidity/Foundry
+contracts/cache/
+contracts/out/
+contracts/broadcast/
+contracts/lib/
 
 # Editor
 *.swp

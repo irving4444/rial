@@ -8,11 +8,13 @@
 import SwiftUI
 import Combine
 import AVFoundation
+import CoreData
 
 struct ImageEditView: View {
     
     @EnvironmentObject private var viewModel: ImageCaptureViewModel
     @Environment(\.presentationMode) var presentation
+    @Environment(\.managedObjectContext) private var viewContext
     @State private var evPointLocation: CGPoint = CGPoint()
     @State private var imageFrame = CGRect()
     
@@ -217,6 +219,16 @@ struct ImageEditView: View {
                     if let signatureValid = response.signatureValid {
                         alertMessage += "\nSignature: \(signatureValid ? "Valid" : "Invalid")"
                     }
+                    
+                    // Always save certified image to gallery
+                    // Check if auto-save is enabled (default is true)
+                    let autoSaveEnabled = UserDefaults.standard.object(forKey: "autoSaveToGallery") as? Bool ?? true
+                    
+                    if autoSaveEnabled {
+                        self.saveCertifiedImage(response: response)
+                        alertMessage += "\n\n💾 Saved to Gallery"
+                    }
+                    
                     showAlert = true
                     
                 case .failure(let error):
@@ -226,6 +238,22 @@ struct ImageEditView: View {
                 }
             }
         }
+    }
+    
+    private func saveCertifiedImage(response: ProverResponse) {
+        guard let attestedImage = viewModel.attestedImage else { return }
+        
+        // Save the certified image data
+        PersistenceController.shared.saveCertifiedImage(
+            attestedImage: attestedImage,
+            imageUrl: response.imageUrl,
+            isVerified: response.signatureValid ?? false
+        )
+        
+        print("✅ Certified image saved to gallery")
+        
+        // Haptic feedback for successful save
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
     }
 }
 

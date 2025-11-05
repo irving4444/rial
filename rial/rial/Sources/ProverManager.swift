@@ -39,6 +39,12 @@ class ProverManager {
     
     // TODO: Move to configuration file or environment variable
     private var baseURL: String {
+        // Check if user has set a custom URL in settings
+        if let customURL = UserDefaults.standard.string(forKey: "backendURL"), !customURL.isEmpty {
+            return customURL
+        }
+        
+        // Default URLs
         #if targetEnvironment(simulator)
         return "http://localhost:3000"
         #else
@@ -48,6 +54,11 @@ class ProverManager {
     
     private var proveURL: URL? {
         URL(string: "\(baseURL)/prove")
+    }
+    
+    // Public method to get backend URL for other views
+    func getBackendURL() -> String {
+        return baseURL
     }
     
     func proveImage(

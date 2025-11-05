@@ -1,21 +1,40 @@
-# Rial - iOS Image Attestation App
+# 🔐 Rial - Cryptographic Image Attestation System
 
-A secure image attestation system with zero-knowledge proof capabilities for iOS.
+<p align="center">
+  <img src="https://img.shields.io/badge/iOS-16.0+-blue.svg" />
+  <img src="https://img.shields.io/badge/Swift-5.0-orange.svg" />
+  <img src="https://img.shields.io/badge/Node.js-16+-green.svg" />
+  <img src="https://img.shields.io/badge/Polygon-Amoy-purple.svg" />
+  <img src="https://img.shields.io/badge/License-MIT-yellow.svg" />
+</p>
+
+A production-ready iOS application that cryptographically attests images using **iOS Secure Enclave**, **Merkle trees**, and **blockchain technology**. Proves image authenticity and combats AI-generated content with multi-layer verification.
 
 ## 🎯 Overview
 
 Rial is an iOS application that captures and attests images using cryptographic proofs. The app integrates with a Node.js backend to process images and generate zero-knowledge proofs, ensuring image authenticity and provenance.
 
-## ✨ Features
+## ⭐ Key Features
 
-- **📸 Camera Capture**: Native iOS camera integration for high-quality image capture
-- **✂️ Image Editing**: Crop and transform images with an intuitive UI
-- **🔐 Cryptographic Attestation**: Images are cryptographically signed for authenticity
-- **🌐 Backend Integration**: Seamless communication with Node.js backend
-- **📱 iOS Native**: Built with SwiftUI and UIKit for optimal performance
-- **🔒 Secure Enclave**: Leverages iOS Secure Enclave for key storage
-- **🌳 Merkle Trees**: Implements Merkle tree data structures for efficient verification
-- **📊 C2PA Support**: Compatible with C2PA (Coalition for Content Provenance and Authenticity) standards
+### Cryptographic Security
+- **🔐 Secure Enclave Signing**: Hardware-backed P-256 ECDSA signatures
+- **🌳 Merkle Tree Proofs**: 1024-tile image hashing for tamper detection
+- **✅ Signature Verification**: Real-time cryptographic validation
+- **🔗 Blockchain Integration**: Polygon network attestation storage
+
+### Anti-AI Proof System
+- **📱 Device Attestation**: iOS App Attest for genuine app verification
+- **📍 GPS Location**: Optional geolocation proof
+- **🎯 Motion Data**: Accelerometer & gyroscope readings
+- **📸 Camera Metadata**: Real sensor information (AI tools can't fake this)
+
+### User Experience
+- **📸 Professional Camera**: iOS-native capture with haptic feedback
+- **✂️ Advanced Crop Tool**: iPhone Photos-style editing
+- **🖼️ Gallery System**: View and manage certified images
+- **📤 Smart Sharing**: Share with verification links & QR codes
+- **⚙️ Configurable**: Custom backend URL, privacy controls
+- **🎨 Modern UI**: SwiftUI with smooth animations
 
 ## 🏗️ Architecture
 
@@ -151,25 +170,30 @@ Processes and attests an image.
 - **C2PA Compliance**: Follows content provenance standards
 - **Network Security**: ATS configured for secure communication
 
-## 🐛 Known Issues & Future Work
+## ✨ What's New (November 2025)
 
-### Current Status
-✅ iOS app fully functional
-✅ Backend receiving and processing images
-✅ Camera capture working
-✅ Image editing and cropping
-✅ Network communication established
+### Latest Updates
+- ✅ **Gallery System**: Full-featured image gallery with search
+- ✅ **Settings Page**: Customizable backend URL and privacy controls
+- ✅ **QR Code Generation**: Share verification links as scannable QR codes
+- ✅ **Signature Verification**: Fixed and working correctly
+- ✅ **Blockchain Integration**: Polygon Amoy testnet deployed
+- ✅ **Haptic Feedback**: Professional iOS interactions
+- ✅ **Modern Animations**: Smooth spring animations throughout
 
-### In Progress
-⏸️ ZK Proof Generation (Docker/SP1 dependency issues)
+### System Status
+✅ **iOS App**: Production-ready with all features  
+✅ **Backend**: Signature verification working  
+✅ **Blockchain**: Connected to Polygon Amoy  
+✅ **Gallery**: Displaying certified images  
+✅ **Sharing**: QR codes and verification links  
 
-### Planned Features
-- [ ] Complete ZK proof integration
-- [ ] Blockchain integration for proof verification
-- [ ] Enhanced C2PA metadata
-- [ ] Image gallery and history
-- [ ] Cloud storage integration
-- [ ] Advanced image forensics
+### Future Enhancements
+- [ ] Offline queue for certifications
+- [ ] Batch image processing
+- [ ] Cloud backup integration
+- [ ] Advanced search filters
+- [ ] Export to PDF reports
 
 ## 🤝 Contributing
 
