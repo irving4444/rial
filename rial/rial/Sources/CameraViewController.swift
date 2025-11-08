@@ -21,6 +21,9 @@ class CameraViewController: UIViewController {
     var screenRect: CGRect! = nil // For view dimensions
     var captureCompletion: CaptureCompletion? = nil
     
+    // Store capture device for proof metadata
+    private var currentCaptureDevice: AVCaptureDevice?
+    
     override func viewDidLoad() {
         checkPermission()
         
@@ -86,6 +89,9 @@ class CameraViewController: UIViewController {
             print("Can't capture from device")
             return
         }
+        
+        // Store for proof metadata collection
+        self.currentCaptureDevice = videoDevice
         
         guard let videoDeviceInput = try? AVCaptureDeviceInput(device: videoDevice) else {
             print("Can't find video input")
@@ -184,29 +190,58 @@ extension CameraViewController: AVCapturePhotoCaptureDelegate {
         // Create final image with upright orientation
         let normalizedImage = UIImage(cgImage: resizedCGImage, scale: 1.0, orientation: .up)
         
-        // If `attestImage` is async, prefer this pattern:
-        // Task {
-        //     do {
-        //         let attestedImage: AttestedImage = try await AuthenticityManager.shared.attestImage(normalizedImage)
-        //         print("Successfully attested image!")
-        //         print("Image Root: \(attestedImage.c2paClaim ?? "nil")")
-        //         // Pass the AttestedImage through the capture completion
-        //     } catch {
-        //         print("Attestation failed: \(error)")
-        //     }
-        // }
+        // 🔐 COLLECT ANTI-AI PROOF METADATA
+        // Check if metadata collection is enabled
+        let enableMetadata = UserDefaults.standard.object(forKey: "enableLocation") as? Bool ?? true
         
-        let attestedImage = AttestedImage(image: normalizedImage, c2paClaim: nil)
-        AuthenticityManager.shared.attestImage(attestedImage) { result in
-            switch result {
-            case .success(let attestedImage):
-                print("Successfully attested image!")
-                print("Image Root: \(attestedImage.c2paClaim?.imageRoot ?? "nil")")
-                // Pass the AttestedImage through the capture completion
-                self.captureCompletion?(attestedImage, nil)
-            case .failure(let error):
-                print("Attestation failed: \(error)")
-                self.captureCompletion?(nil, error)
+        if enableMetadata {
+            print("📊 Collecting anti-AI proof metadata (fast mode)...")
+            ProofCollector.shared.collectProofMetadata(captureDevice: self.currentCaptureDevice) { proofMetadata in
+                print("✅ Proof metadata collected:")
+                print("   - Camera: \(proofMetadata.cameraModel)")
+                print("   - GPS: \(proofMetadata.latitude != nil ? "Enabled" : "Disabled")")
+                print("   - Motion: \(proofMetadata.accelerometerX != nil ? "Captured" : "None")")
+                print("   - App Attest: \(proofMetadata.appAttestToken != nil ? "Present" : "None")")
+                
+                // Create AttestedImage with proof metadata
+                var attestedImage = AttestedImage(image: normalizedImage, c2paClaim: nil, proofMetadata: proofMetadata)
+                
+                // Attest the image with cryptographic signature
+                AuthenticityManager.shared.attestImage(attestedImage) { result in
+                    switch result {
+                    case .success(var attestedImageWithClaim):
+                        // Make sure proof metadata is included
+                        attestedImageWithClaim.proofMetadata = proofMetadata
+                        
+                        print("Successfully attested image!")
+                        print("Image Root: \(attestedImageWithClaim.c2paClaim?.imageRoot ?? "nil")")
+                        print("🎯 With Anti-AI Proof: ✅")
+                        
+                        // Pass the complete AttestedImage with proof
+                        self.captureCompletion?(attestedImageWithClaim, nil)
+                        
+                    case .failure(let error):
+                        print("Attestation failed: \(error)")
+                        self.captureCompletion?(nil, error)
+                    }
+                }
+            }
+        } else {
+            // Fast mode - no metadata collection
+            print("⚡ Fast mode - skipping metadata collection")
+            var attestedImage = AttestedImage(image: normalizedImage, c2paClaim: nil, proofMetadata: nil)
+            
+            AuthenticityManager.shared.attestImage(attestedImage) { result in
+                switch result {
+                case .success(let attestedImageWithClaim):
+                    print("Successfully attested image!")
+                    print("Image Root: \(attestedImageWithClaim.c2paClaim?.imageRoot ?? "nil")")
+                    self.captureCompletion?(attestedImageWithClaim, nil)
+                    
+                case .failure(let error):
+                    print("Attestation failed: \(error)")
+                    self.captureCompletion?(nil, error)
+                }
             }
         }
     }

@@ -108,6 +108,7 @@ class ProofCollector: NSObject, CLLocationManagerDelegate {
     
     /**
      * Collect comprehensive proof metadata at time of photo capture
+     * Fast collection with 500ms timeout for motion sensors
      */
     func collectProofMetadata(
         captureDevice: AVCaptureDevice?,
@@ -116,57 +117,62 @@ class ProofCollector: NSObject, CLLocationManagerDelegate {
         // Start collecting motion data
         startMotionUpdates()
         
-        // Collect camera info
-        let cameraInfo = collectCameraInfo(device: captureDevice)
-        
-        // Collect location (if permitted)
-        let locationInfo = collectLocationInfo()
-        
-        // Collect motion data
-        let motionInfo = collectMotionInfo()
-        
-        // Collect device/app info
-        let deviceInfo = collectDeviceInfo()
-        
-        // Get App Attest token (if available)
-        let attestToken = AppAttestManager.shared.getAttestation()?.base64EncodedString()
-        
-        let metadata = ProofMetadata(
-            // Camera
-            cameraModel: cameraInfo.model,
-            sensorInfo: cameraInfo.sensor,
-            lensAperture: cameraInfo.aperture,
-            focalLength: cameraInfo.focalLength,
-            iso: cameraInfo.iso,
+        // Wait briefly for motion sensors to collect data (max 500ms)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard let self = self else { return }
             
-            // Location
-            latitude: locationInfo.latitude,
-            longitude: locationInfo.longitude,
-            altitude: locationInfo.altitude,
-            locationAccuracy: locationInfo.accuracy,
-            locationTimestamp: locationInfo.timestamp,
+            // Collect camera info (instant)
+            let cameraInfo = self.collectCameraInfo(device: captureDevice)
             
-            // Motion
-            accelerometerX: motionInfo.accelX,
-            accelerometerY: motionInfo.accelY,
-            accelerometerZ: motionInfo.accelZ,
-            gyroX: motionInfo.gyroX,
-            gyroY: motionInfo.gyroY,
-            gyroZ: motionInfo.gyroZ,
-            movementTimestamp: motionInfo.timestamp,
+            // Collect location (instant - uses cached location)
+            let locationInfo = self.collectLocationInfo()
             
-            // App/Device
-            appAttestToken: attestToken,
-            deviceModel: deviceInfo.model,
-            osVersion: deviceInfo.osVersion,
-            appVersion: deviceInfo.appVersion,
+            // Collect motion data (should have data by now)
+            let motionInfo = self.collectMotionInfo()
             
-            // Timestamp
-            captureTimestamp: ISO8601DateFormatter().string(from: Date())
-        )
-        
-        self.stopMotionUpdates()
-        completion(metadata)
+            // Collect device/app info (instant)
+            let deviceInfo = self.collectDeviceInfo()
+            
+            // Get App Attest token (instant - if available)
+            let attestToken = AppAttestManager.shared.getAttestation()?.base64EncodedString()
+            
+            let metadata = ProofMetadata(
+                // Camera
+                cameraModel: cameraInfo.model,
+                sensorInfo: cameraInfo.sensor,
+                lensAperture: cameraInfo.aperture,
+                focalLength: cameraInfo.focalLength,
+                iso: cameraInfo.iso,
+                
+                // Location
+                latitude: locationInfo.latitude,
+                longitude: locationInfo.longitude,
+                altitude: locationInfo.altitude,
+                locationAccuracy: locationInfo.accuracy,
+                locationTimestamp: locationInfo.timestamp,
+                
+                // Motion
+                accelerometerX: motionInfo.accelX,
+                accelerometerY: motionInfo.accelY,
+                accelerometerZ: motionInfo.accelZ,
+                gyroX: motionInfo.gyroX,
+                gyroY: motionInfo.gyroY,
+                gyroZ: motionInfo.gyroZ,
+                movementTimestamp: motionInfo.timestamp,
+                
+                // App/Device
+                appAttestToken: attestToken,
+                deviceModel: deviceInfo.model,
+                osVersion: deviceInfo.osVersion,
+                appVersion: deviceInfo.appVersion,
+                
+                // Timestamp
+                captureTimestamp: ISO8601DateFormatter().string(from: Date())
+            )
+            
+            self.stopMotionUpdates()
+            completion(metadata)
+        }
     }
     
     // MARK: - Private Helpers

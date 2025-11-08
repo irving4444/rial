@@ -8,6 +8,13 @@ const cron = require('node-cron');
 require('dotenv').config();
 
 const blockchainService = require('./blockchain-service');
+const imageStore = require('./simple-image-store');
+const { applyTransformations } = require('./image-transformer');
+const { secureVerifyImage, generateChallenge } = require('./secure-verification');
+const { generateProofsForSteps } = require('./zk/proof-service');
+const { generateFastHashProof } = require('./zk/fast-proof-service');
+const { HDImageProcessor } = require('./zk/hd-image-processor');
+const { ProofChain } = require('./zk/proof-chain');
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -73,6 +80,34 @@ app.get('/test', (req, res) => {
     res.json({ message: 'Backend is working!', timestamp: new Date().toISOString() });
 });
 
+// Check what's in the image store
+app.get('/store-status', (req, res) => {
+    const stats = imageStore.getStats();
+    res.json({
+        totalImages: stats.totalImages,
+        merkleRoots: stats.merkleRoots,
+        note: 'Store is cleared on server restart. Certify new photos to test.'
+    });
+});
+
+// Get exact certified image by merkle root
+app.get('/get-certified-image/:merkleRoot', (req, res) => {
+    const merkleRoot = req.params.merkleRoot;
+    console.log(`📥 Request for certified image: ${merkleRoot}`);
+    
+    const storedImage = imageStore.getCertifiedImage(merkleRoot);
+    
+    if (!storedImage) {
+        console.log('❌ Image not found');
+        return res.status(404).json({ error: 'Image not found' });
+    }
+    
+    console.log(`✅ Sending certified image: ${storedImage.size} bytes`);
+    res.set('Content-Type', 'image/jpeg');
+    res.set('Content-Length', storedImage.size);
+    res.send(storedImage.imageBuffer);
+});
+
 // Blockchain status endpoint
 app.get('/blockchain/status', (req, res) => {
     const status = blockchainService.getBatchStatus();
@@ -106,7 +141,12 @@ app.post('/blockchain/submit-batch', async (req, res) => {
 
 // Verify attestation on blockchain
 app.get('/blockchain/verify/:attestationId', async (req, res) => {
-    const { attestationId } = req.params;
+    let { attestationId } = req.params;
+    
+    // Ensure attestationId has 0x prefix
+    if (!attestationId.startsWith('0x')) {
+        attestationId = '0x' + attestationId;
+    }
     
     console.log(`🔍 Verifying attestation: ${attestationId}`);
     
@@ -118,6 +158,64 @@ app.get('/blockchain/verify/:attestationId', async (req, res) => {
         res.json(result);
     }
 });
+
+// Simple image verification (INSECURE - only checks if image exists)
+app.post('/verify-image', upload.single('image'), (req, res) => {
+    try {
+        const merkleRoot = req.body.merkleRoot;
+        const imageBuffer = req.file ? req.file.buffer : null;
+        
+        if (!imageBuffer || !merkleRoot) {
+            return res.status(400).json({ error: 'Missing image or merkle root' });
+        }
+        
+        console.log(`\n🔍 Simple Verification (INSECURE):`);
+        console.log(`   Merkle Root: ${merkleRoot.substring(0, 40)}...`);
+        
+        const result = imageStore.verifyImage(merkleRoot, imageBuffer);
+        
+        if (!result.success) {
+            return res.json({
+                verified: false,
+                error: result.error,
+                merkleRoot: merkleRoot
+            });
+        }
+        
+        if (!result.matches) {
+            return res.json({
+                verified: false,
+                fraud: true,
+                imageMatches: false,
+                storedHash: result.storedHash,
+                uploadedHash: result.uploadedHash,
+                merkleRoot: merkleRoot,
+                message: '🚨 Image does not match certified image!'
+            });
+        }
+        
+        // Verified but insecure!
+        res.json({
+            verified: true,
+            imageMatches: true,
+            storedHash: result.storedHash,
+            uploadedHash: result.uploadedHash,
+            merkleRoot: merkleRoot,
+            message: '⚠️ Image matches but ownership not proven! Use /secure-verify instead.',
+            warning: 'Anyone with this image can pass this verification!'
+        });
+        
+    } catch (error) {
+        console.error('Verification error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Generate challenge for secure verification
+app.get('/verify/challenge', generateChallenge);
+
+// SECURE verification with ownership proof
+app.post('/secure-verify', upload.single('image'), secureVerifyImage);
 
 // Reveal image publicly (optional)
 app.post('/blockchain/reveal', express.json(), async (req, res) => {
@@ -225,6 +323,7 @@ app.post('/prove', upload.single('img_buffer'), async (req, res) => {
         
         // 6. Parse transformations
         let transformations = [];
+        let zkProofs = [];
         if (transformationsJson) {
             try {
                 transformations = JSON.parse(transformationsJson);
@@ -234,7 +333,55 @@ app.post('/prove', upload.single('img_buffer'), async (req, res) => {
             }
         }
         
-        // 7. Parse proof metadata
+        // 7. Apply transformations and store for fraud detection
+        if (c2paClaim && c2paClaim.imageRoot) {
+            try {
+                // Apply same transformations that iOS applied before computing merkle root
+                const transformResult = await applyTransformations(imageBuffer, transformations);
+                const transformedImage = transformResult.finalBuffer;
+                console.log(`📸 Transformed image: ${transformedImage.length} bytes (original: ${imageBuffer.length})`);
+                
+                // Store the TRANSFORMED image (this matches what iOS computed merkle root on)
+                imageStore.storeCertifiedImage(c2paClaim.imageRoot, transformedImage);
+
+                // Generate zero-knowledge proofs for each permissible edit
+                if (transformResult.steps.length > 0) {
+                    try {
+                        const useFastProofs = req.body.fast_proofs === 'true' || process.env.USE_FAST_PROOFS === 'true';
+                        
+                        if (useFastProofs) {
+                            // Fast hash-based proof (milliseconds)
+                            console.log('⚡ Using fast hash-based proofs...');
+                            zkProofs = [];
+                            for (const step of transformResult.steps) {
+                                const hashProof = await generateFastHashProof(
+                                    step.beforeBuffer,
+                                    step.afterBuffer,
+                                    step
+                                );
+                                zkProofs.push(hashProof);
+                            }
+                            console.log(`⚡ Generated ${zkProofs.length} fast proof(s)`);
+                        } else {
+                            // Full pixel-by-pixel proof (slower but more secure)
+                            console.log('🔒 Using full pixel-by-pixel proofs...');
+                            zkProofs = await generateProofsForSteps(imageBuffer, transformResult.steps, {
+                                persist: true
+                            });
+                            console.log(`🧾 Generated ${zkProofs.length} ZK proof(s)`);
+                        }
+                    } catch (zkError) {
+                        console.log(`⚠️ Failed to generate ZK proofs: ${zkError.message}`);
+                    }
+                }
+
+                // Attach proofs to response
+            } catch (e) {
+                console.log(`⚠️ Failed to apply transformations: ${e.message}`);
+            }
+        }
+        
+        // 8. Parse proof metadata
         let proofMetadata = null;
         if (proofMetadataJson) {
             try {
@@ -248,7 +395,7 @@ app.post('/prove', upload.single('img_buffer'), async (req, res) => {
             }
         }
         
-        // 8. Queue for blockchain attestation (if signature is valid)
+        // 9. Queue for blockchain attestation (if signature is valid)
         let attestationId = null;
         if (signatureValid && c2paClaim) {
             try {
@@ -291,7 +438,7 @@ app.post('/prove', upload.single('img_buffer'), async (req, res) => {
             }
         }
         
-        // 9. Generate response
+        // 10. Generate response
         const response = {
             success: true,
             message: 'Image received and verified',
@@ -307,6 +454,21 @@ app.post('/prove', upload.single('img_buffer'), async (req, res) => {
             } : null,
             timestamp: new Date().toISOString()
         };
+
+        if (zkProofs.length > 0) {
+            response.zkProofs = zkProofs.map((proof) => ({
+                type: proof.type,
+                originalHash: proof.originalHash,
+                transformedHash: proof.transformedHash,
+                transformation: proof.transformation,
+                circuit: proof.circuit,
+                params: proof.params,
+                publicSignals: proof.publicSignals,
+                proof: proof.proof,
+                verificationKeyPath: proof.artifacts?.verificationKey,
+                storedProof: proof.persisted
+            }));
+        }
         
         console.log('✅ Response ready:', response.success ? 'SUCCESS' : 'FAILURE');
         res.json(response);
@@ -455,7 +617,7 @@ async function verifySignature(imageBuffer, signatureBase64, publicKeyBase64, c2
 // Start server
 app.listen(port, '0.0.0.0', () => {
     console.log(`🚀 Backend server listening at http://0.0.0.0:${port}`);
-    console.log(`📱 Access from iPhone at http://10.0.0.132:${port}`);
+    console.log(`📱 Access from iPhone at http://10.0.0.59:${port}`);
     console.log('');
     console.log('Endpoints:');
     console.log(`   GET  /test  - Health check`);

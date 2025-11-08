@@ -67,5 +67,7 @@
 	<string>Location data is used to prove the image was captured in a real physical location, not AI-generated.</string>
 	<key>NSMotionUsageDescription</key>
 	<string>Motion data is used to prove the device was moving in real-world physics, not AI-generated.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Save your certified images to the Photos app for safekeeping and easy access.</string>
 </dict>
 </plist>

@@ -31,6 +31,42 @@ struct ProverResponse: Codable {
     let message: String
     let signatureValid: Bool?
     let imageUrl: String?
+    let zkProofs: [ZKProof]?
+    let success: Bool?
+}
+
+struct ZKProof: Codable {
+    let type: String
+    let originalHash: String?
+    let transformedHash: String?
+    let transformation: TransformationType?
+    let proof: ProofDetails?
+}
+
+struct TransformationType: Codable {
+    let type: String
+    let params: [String: Any]?
+    
+    enum CodingKeys: String, CodingKey {
+        case type
+        case params
+    }
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        type = try container.decode(String.self, forKey: .type)
+        params = nil // Simplified for now
+    }
+    
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(type, forKey: .type)
+    }
+}
+
+struct ProofDetails: Codable {
+    let method: String
+    let timestamp: Double?
 }
 
 class ProverManager {
@@ -41,14 +77,19 @@ class ProverManager {
     private var baseURL: String {
         // Check if user has set a custom URL in settings
         if let customURL = UserDefaults.standard.string(forKey: "backendURL"), !customURL.isEmpty {
+            print("🔧 Using custom backend URL: \(customURL)")
             return customURL
         }
-        
+
         // Default URLs
         #if targetEnvironment(simulator)
-        return "http://localhost:3000"
+        let defaultURL = "http://localhost:3000"
+        print("🔧 Using simulator default: \(defaultURL)")
+        return defaultURL
         #else
-        return "http://10.0.0.132:3000" // Replace with your Mac's IP
+        let defaultURL = "http://10.0.0.59:3000"
+        print("🔧 Using device default: \(defaultURL)")
+        return defaultURL
         #endif
     }
     
@@ -68,6 +109,10 @@ class ProverManager {
         c2paClaim: String?,
         croppingHeight: Int32,
         croppingWidth: Int32,
+        croppingX: Int32 = 0,
+        croppingY: Int32 = 0,
+        proofMetadata: ProofMetadata? = nil,
+        useZKProofs: Bool = true,
         completion: @escaping (Result<ProverResponse, ProverError>) -> Void
     ) {
         guard let url = proveURL else {
@@ -84,12 +129,12 @@ class ProverManager {
         }
         
         print("✅ Starting proof generation - Image size: \(img_buffer.count) bytes")
+        print("🌐 Using backend URL: \(url)")
         
         let request = MultipartFormDataRequest(url: url)
         request.addDataField(named: "img_buffer", data: img_buffer, mimeType: "image/jpeg")
         
-        let croppingX = Int((512 - croppingWidth) / 2)
-        let croppingY = Int((512 - croppingHeight) / 2)
+        // Use the provided crop coordinates
         let transformations = """
         [{"Crop":{"x":\(croppingX),"y":\(croppingY),"height":\(croppingHeight),"width":\(croppingWidth)}}]
         """
@@ -102,10 +147,31 @@ class ProverManager {
             request.addTextField(named: "c2pa_claim", value: claim)
         }
         
+        // Add ZK proof option (fast hash-based proofs)
+        if useZKProofs {
+            request.addTextField(named: "fast_proofs", value: "true")
+        }
+        
+        // 🎯 Add proof metadata (Anti-AI proof)
+        if let metadata = proofMetadata {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = .prettyPrinted
+            if let metadataJSON = try? encoder.encode(metadata),
+               let metadataString = String(data: metadataJSON, encoding: .utf8) {
+                request.addTextField(named: "proof_metadata", value: metadataString)
+                print("📊 Sending Anti-AI proof metadata:")
+                print("   - Camera: \(metadata.cameraModel)")
+                print("   - GPS: \(metadata.latitude != nil ? "✅" : "❌")")
+                print("   - Motion: \(metadata.accelerometerX != nil ? "✅" : "❌")")
+            }
+        } else {
+            print("⚠️ No proof metadata available")
+        }
+        
         // Create URL session with timeout
         let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 30  // 30 second timeout
-        config.timeoutIntervalForResource = 60
+        config.timeoutIntervalForRequest = 60  // 60 second timeout (allows for metadata collection)
+        config.timeoutIntervalForResource = 120
         let session = URLSession(configuration: config)
         
         session.dataTask(with: request) { data, response, error in
@@ -134,6 +200,21 @@ class ProverManager {
                     let decoder = JSONDecoder()
                     let response = try decoder.decode(ProverResponse.self, from: data)
                     print("✅ Proof generated successfully")
+                    
+                    // Log ZK proofs if present
+                    if let zkProofs = response.zkProofs {
+                        print("🔐 ZK Proofs generated: \(zkProofs.count)")
+                        for (index, proof) in zkProofs.enumerated() {
+                            print("   \(index + 1). Type: \(proof.type)")
+                            if let originalHash = proof.originalHash {
+                                print("      Original: \(originalHash.prefix(16))...")
+                            }
+                            if let transformedHash = proof.transformedHash {
+                                print("      Result: \(transformedHash.prefix(16))...")
+                            }
+                        }
+                    }
+                    
                     completion(.success(response))
                     
                     // Save to persistent storage
@@ -146,7 +227,9 @@ class ProverManager {
                     let fallbackResponse = ProverResponse(
                         message: "Proof generated",
                         signatureValid: nil,
-                        imageUrl: nil
+                        imageUrl: nil,
+                        zkProofs: nil,
+                        success: true
                     )
                     completion(.success(fallbackResponse))
                 }

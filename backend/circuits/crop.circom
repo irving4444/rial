@@ -1,33 +1,38 @@
-pragma circom "2.0.0";
+pragma circom 2.0.0;
 
-// This circuit proves that a transformation (e.g., a crop) was applied to an original image
-// to produce a transformed image.
-//
-// Inputs:
-// - originalHash: A hash of the original image data (private).
-// - transformedHash: A hash of the transformed image data (private).
-// - x, y, width, height: The parameters of the transformation (public).
-//
-// The circuit doesn't perform the actual image processing. Instead, it acts as a template
-// to prove that the prover *knew* the private hashes and that they were used in a computation
-// along with the public transformation parameters.
-template Crop() {
-    // Private Inputs
-    signal private input originalHash[2]; // Representing a 256-bit hash as 2 x 128-bit numbers
-    signal private input transformedHash[2];
+/*
+ * Crop circuit adapted from Trisha Datta & Dan Boneh's reference implementation.
+ *
+ * Given an original RGB image and a cropped RGB image, prove that the cropped image
+ * is equal to a rectangular sub-region of the original image.
+ *
+ * Parameters:
+ *   hOrig, wOrig   - dimensions of the original image
+ *   hNew,  wNew    - dimensions of the cropped image
+ *   hStartNew      - starting row (top) of the crop region within the original image
+ *   wStartNew      - starting column (left) of the crop region within the original image
+ *
+ * Inputs:
+ *   orig           - original RGB pixels  [hOrig][wOrig][3]
+ *   new            - cropped RGB pixels   [hNew][wNew][3]
+ *
+ * Constraints:
+ *   For every pixel in the cropped image, enforce equality with the corresponding pixel
+ *   in the original image offset by (hStartNew, wStartNew).
+ */
+template Crop(hOrig, wOrig, hNew, wNew, hStartNew, wStartNew) {
+    signal input orig[hOrig][wOrig][3];
+    signal input new[hNew][wNew][3];
+    signal output ok;
 
-    // Public Inputs
-    signal input x;
-    signal input y;
-    signal input width;
-    signal input height;
+    for (var i = 0; i < hNew; i++) {
+        for (var j = 0; j < wNew; j++) {
+            for (var k = 0; k < 3; k++) {
+                new[i][j][k] === orig[hStartNew + i][wStartNew + j][k];
+            }
+        }
+    }
 
-    // Logic to ensure inputs are used
-    signal intermediate;
-    intermediate <== originalHash[0] + originalHash[1] + transformedHash[0] + transformedHash[1] + x + y + width + height;
-    
-    signal output out;
-    out <== intermediate;
+    // Dummy output to keep circuit compatible with snarkjs fullProve
+    ok <== 1;
 }
-
-component main = Crop();

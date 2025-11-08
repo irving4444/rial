@@ -110,6 +110,16 @@ struct PersistenceController {
         imageDict["imageUrl"] = imageUrl ?? ""
         imageDict["isVerified"] = isVerified ? "true" : "false"
         
+        // 🎯 Save Anti-AI Proof Metadata
+        if let proofMetadata = attestedImage.proofMetadata {
+            let encoder = JSONEncoder()
+            if let metadataJSON = try? encoder.encode(proofMetadata),
+               let metadataString = String(data: metadataJSON, encoding: .utf8) {
+                imageDict["proofMetadata"] = metadataString
+                print("🎯 Saving Anti-AI proof metadata")
+            }
+        }
+        
         print("💾 Image dict keys: \(imageDict.keys)")
         
         // Get existing certified images or create new array

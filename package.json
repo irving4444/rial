@@ -1,18 +1,43 @@
 {
-  "name": "rial-backend",
+  "name": "zk-img",
   "version": "1.0.0",
-  "description": "",
-  "main": "server.js",
+  "description": "Zero-Knowledge Image Authentication System - Prove photos are REAL and happened in REAL LIFE",
+  "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node server.js"
+    "setup:all": "npm run setup-backend && npm run setup-ios",
+    "setup-backend": "cd backend && npm install",
+    "setup-ios": "echo 'iOS dependencies handled by Xcode'",
+    "setup-zk": "cd backend && npm run setup-zk",
+    "dev": "npm run dev-backend",
+    "dev-backend": "cd backend && npm start",
+    "test": "cd backend && npm run test-authenticity",
+    "test-authenticity": "cd backend && node test-authenticity.js",
+    "clean": "cd backend && npm run clean",
+    "build-ios": "echo 'Open rial/rial/rial.xcodeproj in Xcode to build'"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "dependencies": {
-    "express": "^4.19.2",
-    "multer": "^1.4.5-lts.1",
-    "elliptic": "^6.5.5"
+  "keywords": [
+    "zero-knowledge",
+    "zkp",
+    "cryptography",
+    "image-authentication",
+    "anti-ai",
+    "blockchain",
+    "fraud-detection",
+    "circom",
+    "halo2",
+    "groth16"
+  ],
+  "author": "ZK-IMG Team",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/zk-img.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yourusername/zk-img/issues"
+  },
+  "homepage": "https://github.com/yourusername/zk-img#readme",
+  "engines": {
+    "node": ">=18.0.0"
   }
 }

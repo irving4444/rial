@@ -6,6 +6,7 @@ struct SettingsView: View {
     @AppStorage("enableMotionData") private var enableMotionData = true
     @AppStorage("autoSaveToGallery") private var autoSaveToGallery = true
     @AppStorage("compressionQuality") private var compressionQuality = 0.8
+    @AppStorage("enableZKProofs") private var enableZKProofs = true
     
     init() {
         // Set default value for auto-save if not already set
@@ -43,6 +44,10 @@ struct SettingsView: View {
                     Button(action: testConnection) {
                         Label("Test Connection", systemImage: "network")
                     }
+
+                    Button(action: resetToDefaultURL) {
+                        Label("Reset URL", systemImage: "arrow.counterclockwise")
+                    }
                 } header: {
                     Text("Server Configuration")
                 } footer: {
@@ -53,16 +58,32 @@ struct SettingsView: View {
                 // Privacy Settings
                 Section {
                     Toggle(isOn: $enableLocation) {
-                        Label("Include Location Data", systemImage: "location.fill")
+                        VStack(alignment: .leading, spacing: 4) {
+                            Label("Include Location Data", systemImage: "location.fill")
+                            if !enableLocation {
+                                Text("⚡ Fast Mode - No GPS delay")
+                                    .font(.caption2)
+                                    .foregroundColor(.orange)
+                            }
+                        }
                     }
                     
                     Toggle(isOn: $enableMotionData) {
                         Label("Include Motion Data", systemImage: "move.3d")
                     }
+                    
+                    Toggle(isOn: $enableZKProofs) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Label("Enable ZK Proofs", systemImage: "lock.shield")
+                            Text("Privacy-preserving image transformations")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                    }
                 } header: {
-                    Text("Privacy")
+                    Text("Privacy & Performance")
                 } footer: {
-                    Text("Location and motion data help prove images are real (not AI-generated)")
+                    Text("Location and motion data help prove images are real (not AI-generated). ZK proofs ensure privacy when sharing transformed images.")
                         .font(.caption)
                 }
                 
@@ -138,6 +159,10 @@ struct SettingsView: View {
                     Button(action: exportLogs) {
                         Label("Export Debug Logs", systemImage: "doc.text")
                     }
+                    
+                    NavigationLink(destination: OnboardingView()) {
+                        Label("View Tutorial", systemImage: "graduationcap")
+                    }
                 } header: {
                     Text("Advanced")
                 }
@@ -186,7 +211,13 @@ struct SettingsView: View {
             }
         }.resume()
     }
-    
+
+    private func resetToDefaultURL() {
+        backendURL = ""
+        showAlert = true
+        alertMessage = "✅ Backend URL reset to default"
+    }
+
     private func clearCache() {
         // Clear image cache
         URLCache.shared.removeAllCachedResponses()

@@ -56,6 +56,7 @@ class ImageCaptureViewModel: ObservableObject {
 struct ContentView: View {
     @StateObject private var viewModel = ImageCaptureViewModel()
     @State private var path = NavigationPath()
+    @State private var showOnboarding = !UserDefaults.standard.bool(forKey: "hasSeenOnboarding")
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -158,6 +159,12 @@ struct ContentView: View {
                         SettingsView()
                     case "GalleryView":
                         GalleryView()
+                    case "MapView":
+                        MapView()
+                    case "StatsView":
+                        StatsView()
+                    case "OnboardingView":
+                        OnboardingView()
                     default:
                         Text("Unknown destination")
                     }
@@ -171,18 +178,39 @@ struct ContentView: View {
                         .foregroundColor(.white)
                 }
                 
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button(action: {
-                        path.append("GalleryView")
-                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                    }) {
-                        Image(systemName: "photo.on.rectangle")
+ToolbarItem(placement: .navigationBarTrailing) {
+                    Menu {
+                        Button(action: {
+                            path.append("GalleryView")
+                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        }) {
+                            Label("Gallery", systemImage: "photo.on.rectangle")
+                        }
+                        
+                        Button(action: {
+                            path.append("MapView")
+                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        }) {
+                            Label("Photo Map", systemImage: "map.fill")
+                        }
+                        
+                        Button(action: {
+                            path.append("StatsView")
+                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        }) {
+                            Label("Statistics", systemImage: "chart.bar.fill")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
                             .foregroundColor(.white)
                     }
                 }
             }
             .toolbarBackground(.visible, for: .navigationBar)
             .toolbarBackground(Color.black.opacity(0.3), for: .navigationBar)
+            .fullScreenCover(isPresented: $showOnboarding) {
+                OnboardingView()
+            }
         }
     }
 }
