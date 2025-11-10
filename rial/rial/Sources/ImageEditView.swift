@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import UIKit
 import Combine
 import AVFoundation
 import CoreData
@@ -27,6 +28,7 @@ struct ImageEditView: View {
     @State private var retryCount = 0
     @State private var maxRetries = 2
     @State private var showRetryOption = false
+    @State private var showSettingsOption = false
     @State private var showConfetti = false
     
     // Size presets
@@ -240,7 +242,18 @@ struct ImageEditView: View {
             SimpleConfettiView(isShowing: $showConfetti)
             
             .alert(isPresented: $showAlert) {
-                if showRetryOption {
+                if showSettingsOption {
+                    return Alert(
+                        title: Text(alertTitle),
+                        message: Text(alertMessage),
+                        primaryButton: .default(Text("Open Settings")) {
+                            openAppSettings()
+                        },
+                        secondaryButton: .cancel(Text("Cancel")) {
+                            self.presentation.wrappedValue.dismiss()
+                        }
+                    )
+                } else if showRetryOption {
                     return Alert(
                         title: Text(alertTitle),
                         message: Text(alertMessage),
@@ -277,6 +290,7 @@ struct ImageEditView: View {
         }
         
         isLoading = true
+        showSettingsOption = false
         
         // Convert signature and public key from String? to Data?
         // Use flatMap to properly handle nil values instead of converting empty strings
@@ -373,15 +387,33 @@ struct ImageEditView: View {
                     showAlert = true
                     
                 case .failure(let error):
+                    showRetryOption = false
+                    showSettingsOption = false
                     alertTitle = "Certification Failed"
                     
-                    // Offer retry if under max retries
-                    if retryCount < maxRetries {
-                        alertMessage = "\(error.localizedDescription)\n\nWould you like to retry? (Attempt \(retryCount + 1)/\(maxRetries))"
-                        showRetryOption = true
-                    } else {
-                        alertMessage = "\(error.localizedDescription)\n\nMax retries reached. Please check your connection and try again later."
-                        showRetryOption = false
+                    switch error {
+                    case .localNetworkPermissionRequired:
+                        alertTitle = "Enable Local Network Access"
+                        alertMessage = """
+To reach your secure prover at \(ProverManager.shared.getBackendURL()), rial needs permission to use the local network.
+
+Please open Settings ▸ Privacy & Security ▸ Local Network, enable access for \"rial\", then return to the app and try again.
+"""
+                        showSettingsOption = true
+                    case .networkError(let underlyingError):
+                        if retryCount < maxRetries {
+                            alertMessage = "Network error: \(underlyingError.localizedDescription)\n\nWould you like to retry? (Attempt \(retryCount + 1)/\(maxRetries))"
+                            showRetryOption = true
+                        } else {
+                            alertMessage = "Network error: \(underlyingError.localizedDescription)\n\nMax retries reached. Please check your connection and try again later."
+                        }
+                    default:
+                        if retryCount < maxRetries {
+                            alertMessage = "\(error.localizedDescription)\n\nWould you like to retry? (Attempt \(retryCount + 1)/\(maxRetries))"
+                            showRetryOption = true
+                        } else {
+                            alertMessage = "\(error.localizedDescription)\n\nMax retries reached. Please check your connection and try again later."
+                        }
                     }
                     
                     showAlert = true
@@ -410,6 +442,15 @@ struct ImageEditView: View {
         UINotificationFeedbackGenerator().notificationOccurred(.success)
     }
 }
+
+    private func openAppSettings() {
+        guard let settingsURL = URL(string: UIApplication.openSettingsURLString) else {
+            return
+        }
+        if UIApplication.shared.canOpenURL(settingsURL) {
+            UIApplication.shared.open(settingsURL, options: [:], completionHandler: nil)
+        }
+    }
 
     private func downloadAndSaveTransformedImage(imageUrl: String, attestedImage: AttestedImage, response: ProverResponse) {
         // Construct full URL

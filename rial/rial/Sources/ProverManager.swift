@@ -10,6 +10,7 @@ import Foundation
 enum ProverError: LocalizedError {
     case invalidURL
     case missingData
+    case localNetworkPermissionRequired
     case networkError(Error)
     case serverError(Int, String)
     
@@ -19,6 +20,11 @@ enum ProverError: LocalizedError {
             return "Invalid backend URL configuration"
         case .missingData:
             return "Missing required image or signature data"
+        case .localNetworkPermissionRequired:
+            return """
+Local network access is required to reach the secure prover running on your trusted device.
+Please grant local network permission in Settings ▸ Privacy & Security ▸ Local Network ▸ enable \"rial\".
+"""
         case .networkError(let error):
             return "Network error: \(error.localizedDescription)"
         case .serverError(let code, let message):
@@ -176,6 +182,17 @@ class ProverManager {
         
         session.dataTask(with: request) { data, response, error in
             if let error = error {
+                if let nsError = error as NSError?, nsError.domain == NSURLErrorDomain {
+                    if nsError.code == NSURLErrorNotConnectedToInternet {
+                        let networkInfo = String(describing: nsError.userInfo["_NSURLErrorNWPathKey"] ?? "")
+                        if networkInfo.contains("Local network prohibited") {
+                            print("❌ Local network permission required to reach prover: \(networkInfo)")
+                            completion(.failure(.localNetworkPermissionRequired))
+                            return
+                        }
+                    }
+                }
+                
                 print("❌ Network error: \(error.localizedDescription)")
                 print("   Error code: \(error._code)")
                 completion(.failure(.networkError(error)))

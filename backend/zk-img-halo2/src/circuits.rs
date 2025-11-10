@@ -144,15 +144,65 @@ impl<F: FieldExt> ZKIMGCircuit<F> {
         &self,
         layouter: &mut impl Layouter<F>,
     ) -> Result<Vec<Vec<Vec<F>>>, Error> {
-        // This would implement the various transformations from the paper:
-        // - Crop, Resize, Rotate, Flip, Translate
-        // - Color space conversions
-        // - Filters (sharpen, blur, contrast, etc.)
+        let mut result = self.image_pixels.clone();
 
-        // For now, return original pixels as placeholder
-        // Full implementation would apply actual transformations
+        // Apply transformations based on parameters
+        // For now, implement basic crop if parameters are provided
+        if self.transformation_params.len() >= 4 {
+            let crop_x = self.transformation_params[0];
+            let crop_y = self.transformation_params[1];
+            let crop_width = self.transformation_params[2];
+            let crop_height = self.transformation_params[3];
 
-        Ok(self.image_pixels.clone())
+            // Apply crop transformation
+            result = self.apply_crop(crop_x, crop_y, crop_width, crop_height, layouter)?;
+        }
+
+        Ok(result)
+    }
+
+    /// Apply crop transformation in circuit
+    fn apply_crop(
+        &self,
+        crop_x: F,
+        crop_y: F,
+        crop_width: F,
+        crop_height: F,
+        layouter: &mut impl Layouter<F>,
+    ) -> Result<Vec<Vec<Vec<F>>>, Error> {
+        // Convert field elements to usable values
+        // In practice, these would be constrained to valid ranges
+        let crop_x_u32 = self.field_to_u32(crop_x);
+        let crop_y_u32 = self.field_to_u32(crop_y);
+        let crop_width_u32 = self.field_to_u32(crop_width);
+        let crop_height_u32 = self.field_to_u32(crop_height);
+
+        // Validate crop bounds (would add constraints in real implementation)
+        if crop_x_u32 + crop_width_u32 > self.image_pixels[0].len() as u32 ||
+           crop_y_u32 + crop_height_u32 > self.image_pixels.len() as u32 {
+            return Err(Error::Synthesis);
+        }
+
+        // Extract cropped region
+        let mut cropped = Vec::new();
+        for y in crop_y_u32..(crop_y_u32 + crop_height_u32) {
+            let mut row = Vec::new();
+            for x in crop_x_u32..(crop_x_u32 + crop_width_u32) {
+                let pixel = self.image_pixels[y as usize][x as usize].clone();
+                row.push(pixel);
+            }
+            cropped.push(row);
+        }
+
+        Ok(cropped)
+    }
+
+    /// Convert field element to u32 (simplified - real implementation would constrain properly)
+    fn field_to_u32(&self, value: F) -> u32 {
+        // This is a placeholder - real implementation would use proper field arithmetic
+        // and constraints to ensure valid conversions
+        let bytes = value.to_bytes();
+        u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
     }
 }
 

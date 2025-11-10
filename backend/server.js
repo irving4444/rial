@@ -15,6 +15,26 @@ const { generateProofsForSteps } = require('./zk/proof-service');
 const { generateFastHashProof } = require('./zk/fast-proof-service');
 const { HDImageProcessor } = require('./zk/hd-image-processor');
 const { ProofChain } = require('./zk/proof-chain');
+const BatchProcessor = require('./batch-processor');
+
+// Production dependencies
+const helmet = require('helmet');
+const compression = require('compression');
+const rateLimit = require('express-rate-limit');
+const Joi = require('joi');
+
+// Database and monitoring
+const { initDatabase, models } = require('./src/database');
+const {
+  logger,
+  monitoringMiddleware,
+  recordZKProofMetrics,
+  recordImageProcessing,
+  recordFraudDetection,
+  healthCheck,
+  metricsEndpoint,
+  errorHandler
+} = require('./src/monitoring');
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -68,9 +88,36 @@ if (!fs.existsSync(uploadsDir)) {
 app.use(express.static(path.join(__dirname, 'public')));
 app.use('/uploads', express.static(uploadsDir));
 
-// Middleware for logging
+// Production middleware
+app.use(helmet()); // Security headers
+app.use(compression()); // Gzip compression
+app.use(express.json({ limit: '50mb' })); // Parse JSON with size limit
+app.use(express.urlencoded({ extended: true, limit: '50mb' })); // Parse form data
+
+// Rate limiting
+const limiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 100, // limit each IP to 100 requests per windowMs
+    message: {
+        error: 'Too many requests from this IP, please try again later.',
+        retryAfter: 900
+    },
+    standardHeaders: true,
+    legacyHeaders: false,
+});
+app.use('/prove', limiter); // Stricter limits for proof generation
+
+// Monitoring middleware
+app.use(monitoringMiddleware);
+
+// Logging middleware (now using Winston)
 app.use((req, res, next) => {
-    console.log(`[${new Date().toISOString()}] ${req.method} ${req.url} from ${req.ip}`);
+    logger.info('Request received', {
+        method: req.method,
+        url: req.url,
+        ip: req.ip,
+        userAgent: req.get('User-Agent')
+    });
     next();
 });
 
@@ -106,6 +153,427 @@ app.get('/get-certified-image/:merkleRoot', (req, res) => {
     res.set('Content-Type', 'image/jpeg');
     res.set('Content-Length', storedImage.size);
     res.send(storedImage.imageBuffer);
+});
+
+// Batch processing endpoints
+app.post('/batch/process', async (req, res) => {
+    try {
+        const {
+            images = [],
+            transformations = [],
+            options = {}
+        } = req.body;
+
+        if (!images || images.length === 0) {
+            return res.status(400).json({
+                error: 'No images provided for batch processing'
+            });
+        }
+
+        if (images.length > 50) {
+            return res.status(400).json({
+                error: 'Maximum 50 images per batch'
+            });
+        }
+
+        console.log(`🔄 Starting batch processing of ${images.length} images`);
+
+        // Create batch items
+        const batch = images.map((imageData, index) => ({
+            id: imageData.id || `batch-${index}`,
+            imageBuffer: Buffer.from(imageData.buffer, 'base64'),
+            transformations: imageData.transformations || transformations,
+            metadata: imageData.metadata || {},
+            userId: req.user?.id
+        }));
+
+        // Process batch
+        const processor = new BatchProcessor({
+            maxConcurrent: options.maxConcurrent || 3,
+            maxRetries: options.maxRetries || 2
+        });
+
+        const results = await processor.processBatch(batch, {
+            generateZKProofs: options.generateZKProofs !== false,
+            useHalo2: options.useHalo2 || false,
+            persist: options.persist !== false
+        });
+
+        res.json({
+            success: true,
+            message: `Processed ${results.successful}/${results.total} images`,
+            results: {
+                total: results.total,
+                successful: results.successful,
+                failed: results.failed,
+                processingTime: results.endTime - results.startTime,
+                items: results.items
+            }
+        });
+
+    } catch (error) {
+        logger.error('Batch processing failed', { error: error.message });
+        res.status(500).json({
+            error: 'Batch processing failed',
+            message: error.message
+        });
+    }
+});
+
+// Get batch processing statistics
+app.get('/batch/stats', async (req, res) => {
+    try {
+        if (!models.APIUsage) {
+            return res.json({
+                batchesProcessed: 0,
+                totalImagesProcessed: 0,
+                averageProcessingTime: 0,
+                successRate: 0
+            });
+        }
+
+        const apiUsage = new models.APIUsage();
+        const stats = await apiUsage.getUsageStats(24); // Last 24 hours
+
+        // Calculate batch processing stats
+        const batchRequests = stats.filter(s => s.endpoint.includes('batch'));
+
+        res.json({
+            batchesProcessed: batchRequests.length,
+            totalImagesProcessed: batchRequests.reduce((sum, s) => sum + s.request_count, 0),
+            recentActivity: stats.slice(0, 10)
+        });
+
+    } catch (error) {
+        logger.error('Failed to get batch stats', { error: error.message });
+        res.status(500).json({ error: 'Failed to get batch statistics' });
+    }
+});
+
+// Recursive proof endpoint
+app.post('/prove/recursive', upload.single('image'), async (req, res) => {
+    try {
+        const { chainId, transformation, previousProofId, previousProofMetadata } = req.body;
+        const imageBuffer = req.file.buffer;
+        
+        logger.info('Generating recursive proof', { 
+            chainId, 
+            transformation: JSON.parse(transformation),
+            hasPreviousProof: !!previousProofId 
+        });
+
+        const recursiveProofSystem = require('./zk/recursive-proof-system');
+        
+        let proofMetadata;
+        
+        if (!previousProofId && !chainId) {
+            // Base case: first transformation
+            const { transformedImage } = await applyTransformations(
+                imageBuffer,
+                [JSON.parse(transformation)]
+            );
+            
+            proofMetadata = await recursiveProofSystem.createBaseProof(
+                imageBuffer,
+                transformedImage,
+                JSON.parse(transformation)
+            );
+        } else {
+            // Recursive case: subsequent transformation
+            // In non-DB mode, get from recursive proof system cache
+            let previousMetadata;
+            if (chainId) {
+                // Get from cache using chainId
+                const chain = recursiveProofSystem.getProofChain(chainId);
+                if (!chain) {
+                    return res.status(404).json({ error: 'Proof chain not found' });
+                }
+                // Get the most recent proof metadata from cache
+                previousMetadata = recursiveProofSystem.proofCache.get(chainId);
+                if (!previousMetadata) {
+                    return res.status(404).json({ error: 'Previous proof not found in cache' });
+                }
+            } else if (models && models.ZKProof && previousProofId) {
+                const previousProof = await models.ZKProof.findByPk(previousProofId);
+                if (!previousProof) {
+                    return res.status(404).json({ error: 'Previous proof not found' });
+                }
+                previousMetadata = JSON.parse(previousProof.metadata);
+            } else {
+                return res.status(400).json({ 
+                    error: 'Either chainId or previousProofId required for recursive proofs' 
+                });
+            }
+            const { transformedImage } = await applyTransformations(
+                imageBuffer,
+                [JSON.parse(transformation)]
+            );
+            
+            proofMetadata = await recursiveProofSystem.createRecursiveProof(
+                previousMetadata,
+                transformedImage,
+                JSON.parse(transformation)
+            );
+        }
+        
+        // Store proof in database (if available)
+        let storedProof = { id: Date.now() }; // Mock ID for non-DB mode
+        if (models && models.ZKProof) {
+            storedProof = await models.ZKProof.create({
+                image_id: null, // Will be linked later
+                proof: JSON.stringify(proofMetadata.proof),
+                metadata: JSON.stringify(proofMetadata),
+                transformation: transformation,
+                proving_system: 'halo2-recursive'
+            });
+        }
+        
+        recordZKProofMetrics('recursive', true, 
+            proofMetadata.proof.metrics?.proving_time || 1000);
+        
+        res.json({
+            success: true,
+            proofId: storedProof.id,
+            chainId: proofMetadata.chainId,
+            depth: proofMetadata.depth,
+            transformations: proofMetadata.transformations,
+            proof: proofMetadata.proof
+        });
+    } catch (error) {
+        logger.error('Recursive proof generation failed', { error: error.message });
+        recordZKProofMetrics('recursive', false);
+        res.status(500).json({ 
+            error: 'Recursive proof generation failed',
+            details: error.message 
+        });
+    }
+});
+
+// Verify recursive proof chain
+app.post('/verify/recursive', async (req, res) => {
+    try {
+        const { proofId, chainId } = req.body;
+        
+        const recursiveProofSystem = require('./zk/recursive-proof-system');
+        
+        // Get proof from database or cache
+        let proofMetadata;
+        if (proofId && models && models.ZKProof) {
+            const storedProof = await models.ZKProof.findByPk(proofId);
+            if (!storedProof) {
+                return res.status(404).json({ error: 'Proof not found' });
+            }
+            proofMetadata = JSON.parse(storedProof.metadata);
+        } else if (chainId) {
+            const chain = recursiveProofSystem.getProofChain(chainId);
+            if (!chain) {
+                return res.status(404).json({ error: 'Proof chain not found' });
+            }
+            proofMetadata = chain;
+        } else {
+            return res.status(400).json({ error: 'proofId or chainId required' });
+        }
+        
+        // Verify the proof
+        const isValid = await recursiveProofSystem.verifyProof(proofMetadata);
+        
+        res.json({
+            valid: isValid,
+            chainId: proofMetadata.chainId,
+            depth: proofMetadata.depth,
+            transformations: proofMetadata.transformations,
+            originalHash: proofMetadata.originalHash,
+            currentHash: proofMetadata.currentHash
+        });
+    } catch (error) {
+        logger.error('Recursive proof verification failed', { error: error.message });
+        res.status(500).json({ 
+            error: 'Verification failed',
+            details: error.message 
+        });
+    }
+});
+
+// Export proof chain
+app.get('/proof/chain/:chainId', async (req, res) => {
+    try {
+        const { chainId } = req.params;
+        
+        const recursiveProofSystem = require('./zk/recursive-proof-system');
+        const proofPackage = await recursiveProofSystem.exportProofChain(chainId);
+        
+        res.json(proofPackage);
+    } catch (error) {
+        logger.error('Failed to export proof chain', { error: error.message });
+        res.status(500).json({ 
+            error: 'Export failed',
+            details: error.message 
+        });
+    }
+});
+
+// Advanced transformations demo endpoint
+app.post('/transform/advanced', async (req, res) => {
+    try {
+        const { imageBuffer, transformations } = req.body;
+
+        if (!imageBuffer) {
+            return res.status(400).json({ error: 'No image buffer provided' });
+        }
+
+        const buffer = Buffer.from(imageBuffer, 'base64');
+
+        console.log(`🎨 Applying ${transformations.length} advanced transformations`);
+
+        const startTime = Date.now();
+        const result = await applyTransformations(buffer, transformations);
+        const processingTime = Date.now() - startTime;
+
+        // Generate ZK proof for the transformations
+        let zkProofs = null;
+        if (result.steps.length > 0 && req.body.generateZKProof !== false) {
+            zkProofs = await generateProofsForSteps(result.finalBuffer, result.steps, {
+                useHalo2: req.body.useHalo2 || false,
+                persist: false
+            });
+        }
+
+        res.json({
+            success: true,
+            originalSize: buffer.length,
+            processedSize: result.finalBuffer.length,
+            transformationsApplied: result.steps.length,
+            processingTime,
+            zkProofsGenerated: zkProofs?.length || 0,
+            imageUrl: `/uploads/transform-${Date.now()}.jpg`
+        });
+
+        // Save the transformed image
+        const filename = `transform-${Date.now()}.jpg`;
+        const filepath = path.join(uploadsDir, filename);
+        await fs.writeFile(filepath, result.finalBuffer);
+
+    } catch (error) {
+        logger.error('Advanced transformation failed', { error: error.message });
+        res.status(500).json({
+            error: 'Transformation failed',
+            message: error.message
+        });
+    }
+});
+
+// GPU-accelerated image processing endpoint
+app.post('/gpu/process', async (req, res) => {
+    try {
+        const { imageBuffer, transformations, options = {} } = req.body;
+
+        if (!imageBuffer) {
+            return res.status(400).json({ error: 'No image buffer provided' });
+        }
+
+        if (!transformations || transformations.length === 0) {
+            return res.status(400).json({ error: 'No transformations specified' });
+        }
+
+        const buffer = Buffer.from(imageBuffer, 'base64');
+
+        console.log(`🚀 GPU processing ${transformations.length} transformations`);
+
+        const startTime = Date.now();
+        const result = await applyTransformations(buffer, transformations, {
+            useGPU: true,
+            gpuMode: options.gpuMode || 'auto'
+        });
+        const processingTime = Date.now() - startTime;
+
+        res.json({
+            success: true,
+            originalSize: buffer.length,
+            processedSize: result.finalBuffer.length,
+            transformationsApplied: result.totalSteps,
+            gpuAccelerated: result.gpuAccelerated,
+            gpuSteps: result.gpuSteps,
+            processingMethod: result.processingMethod,
+            processingTime,
+            performance: {
+                throughput: (result.finalBuffer.length / processingTime) * 1000, // bytes/second
+                efficiency: result.gpuAccelerated ? 'high' : 'standard'
+            }
+        });
+
+    } catch (error) {
+        logger.error('GPU processing failed', { error: error.message });
+        res.status(500).json({
+            error: 'GPU processing failed',
+            message: error.message
+        });
+    }
+});
+
+// GPU capabilities endpoint
+app.get('/gpu/capabilities', async (req, res) => {
+    try {
+        // GPU processor is optional
+        let getGPUProcessor;
+        try {
+            getGPUProcessor = require('./src/gpu-processor').getGPUProcessor;
+        } catch (e) {
+            return res.status(503).json({ 
+                error: 'GPU acceleration not available',
+                capabilities: { available: false }
+            });
+        }
+        const gpuProcessor = getGPUProcessor();
+
+        const capabilities = await gpuProcessor.getCapabilities();
+        const metrics = await gpuProcessor.getPerformanceMetrics();
+
+        res.json({
+            success: true,
+            capabilities,
+            metrics,
+            supported: {
+                transformations: ['Grayscale', 'Blur', 'Sharpen', 'EdgeDetect'],
+                modes: ['auto', 'gpu.js', 'tensorflow', 'cpu']
+            }
+        });
+
+    } catch (error) {
+        logger.error('GPU capabilities check failed', { error: error.message });
+        res.status(500).json({
+            error: 'GPU capabilities check failed',
+            message: error.message
+        });
+    }
+});
+
+// Performance benchmarking endpoint
+app.get('/benchmark/run', async (req, res) => {
+    try {
+        const Benchmark = require('./benchmark');
+        const benchmark = new Benchmark();
+
+        console.log('🧪 Running performance benchmarks...');
+        const results = await benchmark.runAllBenchmarks();
+
+        res.json({
+            success: true,
+            message: 'Benchmark completed',
+            results: {
+                system: results.system,
+                zkProofGeneration: results.benchmarks.zkProofGeneration,
+                imageProcessing: results.benchmarks.imageProcessing,
+                summary: results.summary
+            }
+        });
+
+    } catch (error) {
+        logger.error('Benchmark failed', { error: error.message });
+        res.status(500).json({
+            error: 'Benchmark failed',
+            message: error.message
+        });
+    }
 });
 
 // Blockchain status endpoint
@@ -348,6 +816,7 @@ app.post('/prove', upload.single('img_buffer'), async (req, res) => {
                 if (transformResult.steps.length > 0) {
                     try {
                         const useFastProofs = req.body.fast_proofs === 'true' || process.env.USE_FAST_PROOFS === 'true';
+                        const useHalo2 = req.body.use_halo2 === 'true' || process.env.USE_HALO2 === 'true';
                         
                         if (useFastProofs) {
                             // Fast hash-based proof (milliseconds)
@@ -366,7 +835,8 @@ app.post('/prove', upload.single('img_buffer'), async (req, res) => {
                             // Full pixel-by-pixel proof (slower but more secure)
                             console.log('🔒 Using full pixel-by-pixel proofs...');
                             zkProofs = await generateProofsForSteps(imageBuffer, transformResult.steps, {
-                                persist: true
+                                persist: true,
+                                useHalo2
                             });
                             console.log(`🧾 Generated ${zkProofs.length} ZK proof(s)`);
                         }
@@ -614,13 +1084,90 @@ async function verifySignature(imageBuffer, signatureBase64, publicKeyBase64, c2
     });
 }
 
-// Start server
-app.listen(port, '0.0.0.0', () => {
-    console.log(`🚀 Backend server listening at http://0.0.0.0:${port}`);
-    console.log(`📱 Access from iPhone at http://10.0.0.59:${port}`);
-    console.log('');
-    console.log('Endpoints:');
-    console.log(`   GET  /test  - Health check`);
-    console.log(`   POST /prove - Image attestation & verification`);
+// AI Screen Detection Routes
+try {
+    const screenDetectionAPI = require('./ai/screen-detection-api');
+    app.use('/ai', screenDetectionAPI);
+    logger.info('AI Screen Detection API loaded');
+} catch (error) {
+    logger.warn('AI Screen Detection not available:', error.message);
+}
+
+// Health check endpoint
+app.get('/health', healthCheck);
+
+// Metrics endpoint for Prometheus
+app.get('/metrics', metricsEndpoint);
+
+// Error handling middleware (must be last)
+app.use(errorHandler);
+
+// Initialize database and start server
+async function startServer() {
+    try {
+        // Initialize database connections
+        if (process.env.USE_DATABASE !== 'false') {
+            console.log('🔌 Initializing database connections...');
+            await initDatabase();
+            console.log('✅ Database initialized successfully');
+        }
+
+        // Start the server
+        app.listen(port, '0.0.0.0', () => {
+            console.log(`🚀 ZK-IMG Backend Server v${process.env.npm_package_version || '1.0.0'}`);
+            console.log(`📡 Listening at http://0.0.0.0:${port}`);
+            console.log(`📱 Access from mobile: http://${process.env.HOST_IP || '10.0.0.59'}:${port}`);
+            console.log(`📊 Metrics available at: http://localhost:${port}/metrics`);
+            console.log('');
+
+            console.log('🌐 Available Endpoints:');
+            console.log(`   GET  /test          - Basic health check`);
+            console.log(`   GET  /health        - Comprehensive health check`);
+            console.log(`   GET  /metrics       - Prometheus metrics`);
+            console.log(`   POST /prove         - Image attestation & ZK proofs`);
+            console.log(`   POST /secure-verify - Proof verification`);
+            console.log(`   GET  /photo-verifier.html - Web verification interface`);
+            console.log('');
+
+            console.log('🔧 Configuration:');
+            console.log(`   • ZK Proofs: ${process.env.USE_HALO2 === 'true' ? 'Halo2 (Fast)' : 'SnarkJS'}`);
+            console.log(`   • Database: ${process.env.USE_DATABASE === 'false' ? 'Disabled' : 'PostgreSQL + Redis'}`);
+            console.log(`   • Monitoring: ${process.env.NODE_ENV === 'production' ? 'Enabled' : 'Basic'}`);
+            console.log(`   • Rate Limiting: Active (100 req/15min)`);
+            console.log('');
+
+            if (process.env.NODE_ENV === 'production') {
+                console.log('🏭 Production Mode Features:');
+                console.log('   • Security headers (Helmet)');
+                console.log('   • Gzip compression');
+                console.log('   • Request size limits (50MB)');
+                console.log('   • Structured logging (Winston)');
+                console.log('   • Prometheus metrics');
+                console.log('   • Database persistence');
+                console.log('   • Error tracking');
+            }
+
+            console.log('\n🎯 Ready to certify authentic photos!');
+        });
+
+    } catch (error) {
+        logger.error('Failed to start server', { error: error.message, stack: error.stack });
+        console.error('❌ Server startup failed:', error.message);
+        process.exit(1);
+    }
+}
+
+// Handle graceful shutdown
+process.on('SIGTERM', async () => {
+    logger.info('SIGTERM received, shutting down gracefully');
+    process.exit(0);
 });
+
+process.on('SIGINT', async () => {
+    logger.info('SIGINT received, shutting down gracefully');
+    process.exit(0);
+});
+
+// Start the server
+startServer();
 

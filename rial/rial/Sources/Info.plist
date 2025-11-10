@@ -50,8 +50,17 @@
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
 		<key>NSExceptionDomains</key>
 		<dict>
+			<key>10.0.0.59</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSIncludesSubdomains</key>
+				<true/>
+			</dict>
 			<key>10.0.0.132</key>
 			<dict>
 				<key>NSExceptionAllowsInsecureHTTPLoads</key>
@@ -59,7 +68,27 @@
 				<key>NSIncludesSubdomains</key>
 				<true/>
 			</dict>
+			<key>localhost</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSIncludesSubdomains</key>
+				<true/>
+			</dict>
+			<key>lhr.life</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSIncludesSubdomains</key>
+				<true/>
+				<key>NSExceptionRequiresForwardSecrecy</key>
+				<false/>
+				<key>NSExceptionMinimumTLSVersion</key>
+				<string>TLSv1.0</string>
+			</dict>
 		</dict>
+		<key>NSLocalNetworkUsageDescription</key>
+		<string>Local network access is needed to reach the trusted ZK-IMG prover running on your secure workstation.</string>
 	</dict>
 	<key>NSCameraUsageDescription</key>
 	<string>This app needs to access the camera to capture images for attestation.</string>

@@ -4,6 +4,7 @@ const https = require('https');
 const { spawn } = require('child_process');
 const crypto = require('crypto');
 const { groth16 } = require('snarkjs');
+const ZKIMGHalo2Wrapper = require('../zk-img-halo2-wrapper');
 
 const BACKEND_ROOT = path.join(__dirname, '..');
 const CIRCUITS_DIR = path.join(BACKEND_ROOT, 'circuits');
@@ -269,9 +270,15 @@ function saveProofToDisk(circuitType, params, proof, publicSignals) {
 }
 
 async function generateProof(circuitType, params, input, options = {}) {
+    // Use Halo2 if requested, otherwise fallback to snarkjs
+    if (options.useHalo2 || process.env.USE_HALO2 === 'true') {
+        return await generateHalo2Proof(circuitType, params, input, options);
+    }
+
+    // Original snarkjs implementation
     const artifacts = await ensureArtifacts(circuitType, params);
 
-    console.log(`🧮 Generating proof for ${circuitType}`);
+    console.log(`🧮 Generating snarkjs proof for ${circuitType}`);
     const { proof, publicSignals } = await groth16.fullProve(
         input,
         artifacts.wasmPath,
@@ -287,16 +294,91 @@ async function generateProof(circuitType, params, input, options = {}) {
         proof,
         publicSignals,
         artifacts,
-        saved
+        saved,
+        provingSystem: 'snarkjs'
     };
 }
 
-async function verifyProof(circuitType, params, proof, publicSignals) {
+// Halo2 proof generation
+async function generateHalo2Proof(circuitType, params, input, options = {}) {
+    console.log(`🚀 Generating Halo2 proof for ${circuitType}`);
+
+    const halo2 = new ZKIMGHalo2Wrapper();
+
+    // Convert input format for Halo2
+    // This is a simplified conversion - real implementation would be more sophisticated
+    let imageBuffer = Buffer.alloc(0);
+    let transformations = [];
+
+    if (input && input.orig) {
+        // Convert Circom input format to image buffer
+        // This is a placeholder - real implementation would properly decode
+        imageBuffer = Buffer.from(JSON.stringify(input.orig));
+    }
+
+    if (circuitType === 'crop' && params.length >= 4) {
+        transformations.push({
+            type: 'Crop',
+            x: params[4] || 0, // hStartNew
+            y: params[5] || 0, // wStartNew
+            width: params[2], // hNew
+            height: params[3]  // wNew
+        });
+    }
+
+    const halo2Proof = await halo2.generateProof(imageBuffer, transformations);
+
+    // Convert Halo2 format to expected output format
+    const result = {
+        proof: halo2Proof.proof_bytes,
+        publicSignals: halo2Proof.public_inputs,
+        artifacts: {
+            verificationKeyPath: null, // Halo2 handles this differently
+            provingSystem: 'halo2'
+        },
+        saved: null, // Halo2 handles persistence internally
+        provingSystem: 'halo2',
+        performance: halo2Proof.performance,
+        inputHash: halo2Proof.input_hash,
+        outputHash: halo2Proof.output_hash
+    };
+
+    console.log(`✅ Halo2 proof generated in ${halo2Proof.performance.generation_time_ms.toFixed(1)}ms`);
+    console.log(`📊 Proof size: ${halo2Proof.performance.proof_size_kb.toFixed(1)}KB`);
+
+    return result;
+}
+
+async function verifyProof(circuitType, params, proof, publicSignals, options = {}) {
+    // Use Halo2 verification if proof was generated with Halo2
+    if (options.useHalo2 || options.provingSystem === 'halo2') {
+        return await verifyHalo2Proof(circuitType, params, proof, publicSignals);
+    }
+
+    // Original snarkjs verification
     const artifacts = await ensureArtifacts(circuitType, params);
     const vKey = loadVerificationKey(artifacts.verificationKeyPath);
     const valid = await groth16.verify(vKey, publicSignals, proof);
 
-    return { valid, verificationKeyPath: artifacts.verificationKeyPath };
+    return {
+        valid,
+        verificationKeyPath: artifacts.verificationKeyPath,
+        provingSystem: 'snarkjs'
+    };
+}
+
+// Halo2 proof verification
+async function verifyHalo2Proof(circuitType, params, proof, publicSignals) {
+    console.log(`🔍 Verifying Halo2 proof for ${circuitType}`);
+
+    const halo2 = new ZKIMGHalo2Wrapper();
+    const valid = await halo2.verifyProof({ proof_bytes: proof, public_inputs: publicSignals }, publicSignals);
+
+    return {
+        valid,
+        verificationKeyPath: null, // Halo2 handles this differently
+        provingSystem: 'halo2'
+    };
 }
 
 module.exports = {

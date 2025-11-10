@@ -8,6 +8,7 @@ pub mod circuits;
 pub mod transforms;
 pub mod proof_system;
 pub mod image_utils;
+pub mod recursive_circuit;
 
 use std::collections::HashMap;
 use halo2_proofs::{pasta::Fp, plonk::Circuit};

@@ -2,7 +2,15 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#667eea">
+    <meta name="description" content="Verify photo authenticity with zero-knowledge proofs. Works offline.">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="ZK-IMG">
+    <link rel="manifest" href="/manifest.json">
+    <link rel="apple-touch-icon" href="/icon-192x192.png">
+    <link rel="icon" href="/icon-72x72.png" type="image/png">
     <title>ZK-IMG Photo Authenticity Verifier</title>
     <style>
         * {
@@ -533,7 +541,661 @@
         document.addEventListener('DOMContentLoaded', () => {
             console.log('🔍 ZK-IMG Photo Verifier loaded');
             console.log('📸 Ready to verify certified photos');
+
+            // Initialize PWA features
+            initializePWA();
         });
+
+        // Progressive Web App functionality
+        class ZKIMGPWA {
+            constructor() {
+                this.deferredPrompt = null;
+                this.isOnline = navigator.onLine;
+                this.pendingUploads = [];
+                this.cameraStream = null;
+
+                this.init();
+            }
+
+            async init() {
+                this.registerServiceWorker();
+                this.setupNetworkDetection();
+                this.setupCameraIntegration();
+                this.setupInstallPrompt();
+                this.setupOfflineStorage();
+                this.loadPendingUploads();
+
+                // Update UI based on capabilities
+                this.updateUI();
+            }
+
+            // Service Worker Registration
+            async registerServiceWorker() {
+                if ('serviceWorker' in navigator) {
+                    try {
+                        const registration = await navigator.serviceWorker.register('/sw.js');
+                        console.log('✅ Service Worker registered:', registration.scope);
+
+                        // Handle updates
+                        registration.addEventListener('updatefound', () => {
+                            const newWorker = registration.installing;
+                            newWorker.addEventListener('statechange', () => {
+                                if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                                    this.showUpdateNotification();
+                                }
+                            });
+                        });
+
+                        // Listen for messages from service worker
+                        navigator.serviceWorker.addEventListener('message', event => {
+                            this.handleServiceWorkerMessage(event);
+                        });
+
+                    } catch (error) {
+                        console.error('❌ Service Worker registration failed:', error);
+                    }
+                }
+            }
+
+            // Network detection
+            setupNetworkDetection() {
+                window.addEventListener('online', () => {
+                    console.log('🌐 Online - Processing pending uploads...');
+                    this.isOnline = true;
+                    this.updateUI();
+                    this.processPendingUploads();
+                });
+
+                window.addEventListener('offline', () => {
+                    console.log('📴 Offline - Switching to offline mode');
+                    this.isOnline = false;
+                    this.updateUI();
+                });
+            }
+
+            // Camera integration for web
+            setupCameraIntegration() {
+                const cameraBtn = document.getElementById('cameraBtn');
+                if (cameraBtn && 'mediaDevices' in navigator) {
+                    cameraBtn.style.display = 'inline-block';
+                    cameraBtn.addEventListener('click', () => this.openCamera());
+                }
+            }
+
+            async openCamera() {
+                try {
+                    const constraints = {
+                        video: {
+                            facingMode: 'environment', // Use back camera
+                            width: { ideal: 1920 },
+                            height: { ideal: 1080 }
+                        }
+                    };
+
+                    this.cameraStream = await navigator.mediaDevices.getUserMedia(constraints);
+
+                    // Create video element for preview
+                    const video = document.createElement('video');
+                    video.srcObject = this.cameraStream;
+                    video.autoplay = true;
+                    video.playsInline = true;
+
+                    // Add capture button
+                    const captureBtn = document.createElement('button');
+                    captureBtn.textContent = '📸 Capture';
+                    captureBtn.className = 'capture-btn';
+                    captureBtn.onclick = () => this.capturePhoto(video);
+
+                    // Show camera interface
+                    const cameraModal = document.createElement('div');
+                    cameraModal.className = 'camera-modal';
+                    cameraModal.innerHTML = `
+                        <div class="camera-container">
+                            <div class="camera-preview"></div>
+                            <div class="camera-controls">
+                                <button class="cancel-btn" onclick="this.closest('.camera-modal').remove(); pwaApp.closeCamera();">❌ Cancel</button>
+                            </div>
+                        </div>
+                    `;
+
+                    cameraModal.querySelector('.camera-preview').appendChild(video);
+                    cameraModal.querySelector('.camera-controls').appendChild(captureBtn);
+                    document.body.appendChild(cameraModal);
+
+                } catch (error) {
+                    console.error('❌ Camera access failed:', error);
+                    this.showNotification('Camera access denied. Please check permissions.', 'error');
+                }
+            }
+
+            closeCamera() {
+                if (this.cameraStream) {
+                    this.cameraStream.getTracks().forEach(track => track.stop());
+                    this.cameraStream = null;
+                }
+            }
+
+            async capturePhoto(video) {
+                const canvas = document.createElement('canvas');
+                const ctx = canvas.getContext('2d');
+
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                ctx.drawImage(video, 0, 0);
+
+                canvas.toBlob(async (blob) => {
+                    const file = new File([blob], `camera-${Date.now()}.jpg`, { type: 'image/jpeg' });
+                    this.handleFileSelect({ target: { files: [file] } });
+
+                    // Close camera
+                    document.querySelector('.camera-modal').remove();
+                    this.closeCamera();
+                }, 'image/jpeg', 0.9);
+            }
+
+            // PWA Install Prompt
+            setupInstallPrompt() {
+                window.addEventListener('beforeinstallprompt', (event) => {
+                    event.preventDefault();
+                    this.deferredPrompt = event;
+
+                    // Show install button
+                    this.showInstallPrompt();
+                });
+
+                // Check if already installed
+                window.addEventListener('appinstalled', () => {
+                    console.log('✅ PWA installed successfully');
+                    this.hideInstallPrompt();
+                });
+            }
+
+            showInstallPrompt() {
+                const installBanner = document.createElement('div');
+                installBanner.id = 'installBanner';
+                installBanner.className = 'install-banner';
+                installBanner.innerHTML = `
+                    <div class="install-content">
+                        <span>📱 Install ZK-IMG for offline verification</span>
+                        <button id="installBtn">Install</button>
+                        <button id="dismissBtn">✕</button>
+                    </div>
+                `;
+
+                document.body.appendChild(installBanner);
+
+                document.getElementById('installBtn').addEventListener('click', () => {
+                    this.installPWA();
+                });
+
+                document.getElementById('dismissBtn').addEventListener('click', () => {
+                    this.hideInstallPrompt();
+                });
+            }
+
+            hideInstallPrompt() {
+                const banner = document.getElementById('installBanner');
+                if (banner) banner.remove();
+            }
+
+            async installPWA() {
+                if (!this.deferredPrompt) return;
+
+                this.deferredPrompt.prompt();
+                const { outcome } = await this.deferredPrompt.userChoice;
+
+                if (outcome === 'accepted') {
+                    console.log('✅ User accepted PWA install');
+                } else {
+                    console.log('❌ User dismissed PWA install');
+                }
+
+                this.deferredPrompt = null;
+                this.hideInstallPrompt();
+            }
+
+            // Offline storage and sync
+            setupOfflineStorage() {
+                // Setup IndexedDB for offline storage
+                this.initIndexedDB();
+            }
+
+            initIndexedDB() {
+                const request = indexedDB.open('ZKIMG_PWA', 1);
+
+                request.onerror = () => console.error('❌ IndexedDB failed');
+                request.onsuccess = (event) => {
+                    this.db = event.target.result;
+                    console.log('✅ IndexedDB initialized');
+                };
+
+                request.onupgradeneeded = (event) => {
+                    const db = event.target.result;
+                    if (!db.objectStoreNames.contains('pendingUploads')) {
+                        db.createObjectStore('pendingUploads', { keyPath: 'id' });
+                    }
+                    if (!db.objectStoreNames.contains('verifiedPhotos')) {
+                        db.createObjectStore('verifiedPhotos', { keyPath: 'id' });
+                    }
+                };
+            }
+
+            // Handle file uploads with offline support
+            async handleFileUpload(file, options = {}) {
+                const uploadId = `upload-${Date.now()}-${Math.random()}`;
+
+                if (!this.isOnline) {
+                    // Store for later upload
+                    await this.storePendingUpload(file, uploadId, options);
+                    this.showNotification('📴 Photo queued for upload when online', 'info');
+                    return;
+                }
+
+                try {
+                    const result = await this.uploadFile(file, options);
+                    this.showNotification('✅ Photo verified successfully!', 'success');
+
+                    // Store in IndexedDB for offline access
+                    await this.storeVerifiedPhoto(result, uploadId);
+
+                    return result;
+                } catch (error) {
+                    console.error('❌ Upload failed:', error);
+
+                    if (error.message.includes('network') || error.message.includes('fetch')) {
+                        // Network error - queue for later
+                        await this.storePendingUpload(file, uploadId, options);
+                        this.showNotification('📴 Upload failed - queued for when online', 'warning');
+                    } else {
+                        this.showNotification('❌ Verification failed: ' + error.message, 'error');
+                    }
+                }
+            }
+
+            async uploadFile(file, options) {
+                const formData = new FormData();
+                formData.append('img_buffer', file);
+
+                if (options.transformations) {
+                    formData.append('transformations', JSON.stringify(options.transformations));
+                }
+
+                if (options.useHalo2) {
+                    formData.append('use_halo2', 'true');
+                }
+
+                const response = await fetch('/prove', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+
+                return await response.json();
+            }
+
+            async storePendingUpload(file, uploadId, options) {
+                const uploadData = {
+                    id: uploadId,
+                    file: await file.arrayBuffer(),
+                    fileName: file.name,
+                    fileType: file.type,
+                    options: options,
+                    timestamp: new Date().toISOString()
+                };
+
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction(['pendingUploads'], 'readwrite');
+                    const store = transaction.objectStore('pendingUploads');
+                    const request = store.add(uploadData);
+
+                    request.onsuccess = () => {
+                        this.pendingUploads.push(uploadData);
+                        resolve();
+                    };
+                    request.onerror = () => reject(request.error);
+                });
+            }
+
+            async storeVerifiedPhoto(result, photoId) {
+                const photoData = {
+                    id: photoId,
+                    result: result,
+                    timestamp: new Date().toISOString(),
+                    imageUrl: result.imageUrl
+                };
+
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction(['verifiedPhotos'], 'readwrite');
+                    const store = transaction.objectStore('verifiedPhotos');
+                    const request = store.add(photoData);
+
+                    request.onsuccess = () => resolve();
+                    request.onerror = () => reject(request.error);
+                });
+            }
+
+            async processPendingUploads() {
+                if (this.pendingUploads.length === 0) return;
+
+                console.log(`🔄 Processing ${this.pendingUploads.length} pending uploads...`);
+
+                for (const upload of this.pendingUploads) {
+                    try {
+                        const file = new File([upload.file], upload.fileName, { type: upload.fileType });
+                        await this.handleFileUpload(file, upload.options);
+
+                        // Remove from pending
+                        await this.removePendingUpload(upload.id);
+
+                    } catch (error) {
+                        console.error('❌ Failed to process pending upload:', error);
+                    }
+                }
+            }
+
+            async removePendingUpload(uploadId) {
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction(['pendingUploads'], 'readwrite');
+                    const store = transaction.objectStore('pendingUploads');
+                    const request = store.delete(uploadId);
+
+                    request.onsuccess = () => {
+                        this.pendingUploads = this.pendingUploads.filter(u => u.id !== uploadId);
+                        resolve();
+                    };
+                    request.onerror = () => reject(request.error);
+                });
+            }
+
+            async loadPendingUploads() {
+                if (!this.db) return;
+
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction(['pendingUploads'], 'readonly');
+                    const store = transaction.objectStore('pendingUploads');
+                    const request = store.getAll();
+
+                    request.onsuccess = () => {
+                        this.pendingUploads = request.result;
+                        console.log(`📤 Loaded ${this.pendingUploads.length} pending uploads`);
+                        resolve();
+                    };
+                    request.onerror = () => reject(request.error);
+                });
+            }
+
+            // Service Worker message handling
+            handleServiceWorkerMessage(event) {
+                if (event.data && event.data.type === 'OFFLINE_PROCESSING_COMPLETE') {
+                    const results = event.data.results;
+                    const successful = results.filter(r => r.success).length;
+
+                    this.showNotification(
+                        `✅ Processed ${successful}/${results.length} offline requests`,
+                        successful === results.length ? 'success' : 'info'
+                    );
+                }
+            }
+
+            // Update UI based on online/offline status
+            updateUI() {
+                const offlineIndicator = document.getElementById('offlineIndicator') ||
+                    this.createOfflineIndicator();
+
+                if (!this.isOnline) {
+                    offlineIndicator.style.display = 'block';
+                    document.body.classList.add('offline');
+                } else {
+                    offlineIndicator.style.display = 'none';
+                    document.body.classList.remove('offline');
+                }
+
+                // Update pending uploads count
+                const pendingCount = document.getElementById('pendingCount');
+                if (pendingCount) {
+                    pendingCount.textContent = this.pendingUploads.length;
+                }
+            }
+
+            createOfflineIndicator() {
+                const indicator = document.createElement('div');
+                indicator.id = 'offlineIndicator';
+                indicator.className = 'offline-indicator';
+                indicator.innerHTML = `
+                    <div class="offline-content">
+                        📴 You're offline - uploads will be queued
+                        <span id="pendingCount">0</span> pending
+                    </div>
+                `;
+                document.body.appendChild(indicator);
+                return indicator;
+            }
+
+            // Show notifications
+            showNotification(message, type = 'info') {
+                const notification = document.createElement('div');
+                notification.className = `notification notification-${type}`;
+                notification.innerHTML = `
+                    <span>${message}</span>
+                    <button onclick="this.parentElement.remove()">✕</button>
+                `;
+
+                document.body.appendChild(notification);
+
+                // Auto-remove after 5 seconds
+                setTimeout(() => {
+                    if (notification.parentElement) {
+                        notification.remove();
+                    }
+                }, 5000);
+            }
+
+            // Show update notification
+            showUpdateNotification() {
+                const notification = document.createElement('div');
+                notification.className = 'update-notification';
+                notification.innerHTML = `
+                    <div class="update-content">
+                        🔄 App updated! Refresh to get the latest features.
+                        <button onclick="window.location.reload()">Refresh</button>
+                        <button onclick="this.parentElement.parentElement.remove()">Later</button>
+                    </div>
+                `;
+
+                document.body.appendChild(notification);
+            }
+        }
+
+        // Initialize PWA when page loads
+        let pwaApp;
+        function initializePWA() {
+            pwaApp = new ZKIMGPWA();
+
+            // Make PWA app globally available for camera functions
+            window.pwaApp = pwaApp;
+
+            // Add PWA-specific styles
+            const style = document.createElement('style');
+            style.textContent = `
+                .offline {
+                    filter: grayscale(20%);
+                }
+
+                .offline-indicator {
+                    position: fixed;
+                    top: 0;
+                    left: 0;
+                    right: 0;
+                    background: #ff6b35;
+                    color: white;
+                    padding: 8px;
+                    text-align: center;
+                    font-weight: bold;
+                    z-index: 1000;
+                    display: none;
+                }
+
+                .install-banner {
+                    position: fixed;
+                    bottom: 0;
+                    left: 0;
+                    right: 0;
+                    background: #667eea;
+                    color: white;
+                    padding: 16px;
+                    z-index: 1000;
+                    box-shadow: 0 -4px 12px rgba(0,0,0,0.2);
+                }
+
+                .install-content {
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                    max-width: 600px;
+                    margin: 0 auto;
+                }
+
+                .install-content button {
+                    background: white;
+                    color: #667eea;
+                    border: none;
+                    padding: 8px 16px;
+                    border-radius: 6px;
+                    font-weight: bold;
+                    cursor: pointer;
+                    margin-left: 8px;
+                }
+
+                .notification {
+                    position: fixed;
+                    top: 20px;
+                    right: 20px;
+                    background: #4CAF50;
+                    color: white;
+                    padding: 16px;
+                    border-radius: 8px;
+                    box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+                    z-index: 1001;
+                    max-width: 300px;
+                }
+
+                .notification-error {
+                    background: #f44336;
+                }
+
+                .notification-warning {
+                    background: #ff9800;
+                }
+
+                .notification-info {
+                    background: #2196F3;
+                }
+
+                .notification button {
+                    background: none;
+                    border: none;
+                    color: white;
+                    font-size: 18px;
+                    cursor: pointer;
+                    margin-left: 8px;
+                }
+
+                .camera-modal {
+                    position: fixed;
+                    top: 0;
+                    left: 0;
+                    right: 0;
+                    bottom: 0;
+                    background: rgba(0,0,0,0.9);
+                    z-index: 2000;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                }
+
+                .camera-container {
+                    background: white;
+                    border-radius: 12px;
+                    overflow: hidden;
+                    max-width: 90vw;
+                    max-height: 90vh;
+                }
+
+                .camera-preview {
+                    position: relative;
+                }
+
+                .camera-preview video {
+                    display: block;
+                    max-width: 100%;
+                    max-height: 70vh;
+                }
+
+                .camera-controls {
+                    display: flex;
+                    justify-content: space-around;
+                    padding: 16px;
+                    background: #f5f5f5;
+                }
+
+                .capture-btn {
+                    background: #4CAF50;
+                    color: white;
+                    border: none;
+                    padding: 12px 24px;
+                    border-radius: 50px;
+                    font-size: 16px;
+                    cursor: pointer;
+                }
+
+                .cancel-btn {
+                    background: #f44336;
+                    color: white;
+                    border: none;
+                    padding: 12px 24px;
+                    border-radius: 50px;
+                    font-size: 16px;
+                    cursor: pointer;
+                }
+
+                .update-notification {
+                    position: fixed;
+                    top: 20px;
+                    left: 20px;
+                    background: #2196F3;
+                    color: white;
+                    padding: 16px;
+                    border-radius: 8px;
+                    box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+                    z-index: 1001;
+                }
+
+                .update-content button {
+                    background: white;
+                    color: #2196F3;
+                    border: none;
+                    padding: 6px 12px;
+                    border-radius: 4px;
+                    font-weight: bold;
+                    cursor: pointer;
+                    margin-left: 8px;
+                }
+
+                @media (max-width: 768px) {
+                    .container {
+                        padding: 10px;
+                    }
+
+                    .header h1 {
+                        font-size: 2rem;
+                    }
+                }
+            `;
+            document.head.appendChild(style);
+        }
     </script>
 </body>
 </html>
